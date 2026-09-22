@@ -95,15 +95,16 @@ class Database:
             conn.close()
 
     def create_job(self, *, name: str, source_type: str, source_path: str,
-                   mode: str, fixed_domain: str | None) -> dict[str, Any]:
+                   mode: str, fixed_domain: str | None,
+                   status: str = "queued") -> dict[str, Any]:
         job_id = uuid.uuid4().hex
         stamp = utcnow()
         with self.connect() as conn:
             conn.execute(
                 """INSERT INTO jobs
                 (id,name,source_type,source_path,mode,fixed_domain,status,stage,created_at,updated_at)
-                VALUES (?,?,?,?,?,?, 'queued','queued',?,?)""",
-                (job_id, name, source_type, source_path, mode, fixed_domain, stamp, stamp),
+                VALUES (?,?,?,?,?,?,?,'queued',?,?)""",
+                (job_id, name, source_type, source_path, mode, fixed_domain, status, stamp, stamp),
             )
         self.add_event(job_id, "info", "任务已创建")
         return self.get_job(job_id)

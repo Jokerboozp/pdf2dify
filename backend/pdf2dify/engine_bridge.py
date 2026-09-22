@@ -84,12 +84,27 @@ def main() -> int:
     args = parser.parse_args()
     engine_root = Path(args.engine_root).resolve()
     load_engine(engine_root)
-    from ops_rag.common import config, read_json
+    from ops_rag.common import config, read_json, write_json
     cfg = config(args.config)
 
     if args.stage == "scan":
         from ops_rag.inventory import scan
         result = scan(cfg)
+        unique = {}
+        duplicates = []
+        for document in result["documents"]:
+            if document["sha256"] in unique:
+                duplicates.append({
+                    "path": document["path"],
+                    "same_as": unique[document["sha256"]]["path"],
+                })
+            else:
+                unique[document["sha256"]] = document
+        result["documents"] = list(unique.values())
+        result["file_count"] = len(unique)
+        result["total_pages"] = sum(item.get("pages", 0) for item in unique.values())
+        result["duplicates"] = duplicates
+        write_json(Path(cfg["data_dir"]) / "inventory.json", result)
         result = {k: v for k, v in result.items() if k != "documents"}
     elif args.stage == "native":
         from ops_rag.pipeline import native_extract

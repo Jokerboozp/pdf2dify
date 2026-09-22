@@ -22,7 +22,7 @@ class Settings:
     def load(cls) -> "Settings":
         project_root = Path(os.getenv("PDF2DIFY_ROOT", PROJECT_ROOT)).resolve()
         data_dir = Path(os.getenv("PDF2DIFY_DATA_DIR", project_root / "data")).resolve()
-        default_engine = project_root.parent / "ops-pdf-rag"
+        default_engine = project_root / "engine" / "ops-pdf-rag"
         engine_root = Path(os.getenv("PDF2DIFY_ENGINE_ROOT", default_engine)).resolve()
         default_python = engine_root / ".venv" / "Scripts" / "python.exe"
         if os.name != "nt":
@@ -76,4 +76,3 @@ class SecretStore:
             "embedding_provider": values.get("DIFY_EMBEDDING_PROVIDER", "langgenius/ollama/ollama"),
             "embedding_model": values.get("DIFY_EMBEDDING_MODEL", "nomic-embed-text:latest"),
         }
-

@@ -31,13 +31,18 @@ class JobService:
         if path.is_file():
             job = self.db.create_job(
                 name=name, source_type="path_file", source_path=str(path),
-                mode=mode, fixed_domain=fixed_domain,
+                mode=mode, fixed_domain=fixed_domain, status="preparing",
             )
-            target = self.settings.data_dir / "uploads" / job["id"]
-            target.mkdir(parents=True, exist_ok=True)
-            copied = target / path.name
-            shutil.copy2(path, copied)
-            return self.db.update_job(job["id"], message="文件已复制到任务工作区") | {"source_path": str(copied)}
+            try:
+                target = self.settings.data_dir / "uploads" / job["id"]
+                target.mkdir(parents=True, exist_ok=True)
+                copied = target / path.name
+                shutil.copy2(path, copied)
+                self.db.add_event(job["id"], "info", "文件已复制到任务工作区")
+                return self.db.update_job(job["id"], status="queued", message="等待处理")
+            except Exception as exc:
+                self.db.update_job(job["id"], status="failed", error=str(exc), message="复制文件失败")
+                raise
         return self.db.create_job(
             name=name, source_type="path_directory", source_path=str(path),
             mode=mode, fixed_domain=fixed_domain,
@@ -58,18 +63,23 @@ class JobService:
             normalized_files.append((relative, stream))
         job = self.db.create_job(
             name=name, source_type="upload", source_path="",
-            mode=mode, fixed_domain=fixed_domain,
+            mode=mode, fixed_domain=fixed_domain, status="preparing",
         )
         root = self.settings.data_dir / "uploads" / job["id"]
-        root.mkdir(parents=True, exist_ok=True)
-        for relative, stream in normalized_files:
-            target = (root / relative).resolve()
-            if not target.is_relative_to(root.resolve()):
-                raise ValueError(f"非法文件路径：{relative}")
-            target.parent.mkdir(parents=True, exist_ok=True)
-            with target.open("wb") as output:
-                shutil.copyfileobj(stream, output)
-        return self.db.update_job(job["id"], message=f"已接收 {len(files)} 个 PDF", output_dir=str(root))
+        try:
+            root.mkdir(parents=True, exist_ok=True)
+            for relative, stream in normalized_files:
+                target = (root / relative).resolve()
+                if not target.is_relative_to(root.resolve()):
+                    raise ValueError(f"非法文件路径：{relative}")
+                target.parent.mkdir(parents=True, exist_ok=True)
+                with target.open("wb") as output:
+                    shutil.copyfileobj(stream, output)
+            self.db.add_event(job["id"], "info", f"已接收 {len(files)} 个 PDF")
+            return self.db.update_job(job["id"], status="queued", message="等待处理")
+        except Exception as exc:
+            self.db.update_job(job["id"], status="failed", error=str(exc), message="上传失败")
+            raise
 
     def source_root(self, job: dict) -> Path:
         if job["source_type"] == "path_file":

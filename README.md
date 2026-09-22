@@ -42,7 +42,7 @@ Vue Web UI → FastAPI → SQLite task queue → Worker → ops-pdf-rag engine
                                                    └─ Dify Service API
 ```
 
-默认解析引擎路径为 `D:\rag\ops-pdf-rag`。可以通过环境变量修改：
+默认使用仓库内 `engine/ops-pdf-rag` 固定版本，安装脚本会为它创建独立的 Python 环境。可以通过环境变量改为已有的解析引擎：
 
 - `PDF2DIFY_ENGINE_ROOT`
 - `PDF2DIFY_ENGINE_PYTHON`

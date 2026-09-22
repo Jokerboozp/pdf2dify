@@ -8,7 +8,6 @@ import time
 import zipfile
 import html
 from pathlib import Path
-from typing import Callable
 
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill
@@ -183,6 +182,12 @@ class PipelineRunner:
             job_id, total_files=inventory["file_count"], total_pages=inventory["total_pages"],
             message=f"发现 {inventory['file_count']} 个 PDF，共 {inventory['total_pages']} 页",
         )
+        if inventory.get("duplicates"):
+            self.db.add_event(job_id, "warning", f"跳过 {len(inventory['duplicates'])} 个内容完全相同的 PDF")
+        failed = [item for item in inventory["documents"] if item.get("status") != "ok"]
+        if failed:
+            names = "、".join(item["name"] for item in failed[:5])
+            raise ValueError(f"{len(failed)} 个 PDF 无法读取：{names}")
 
     def _package(self, data_dir: Path, workspace: Path) -> None:
         source = data_dir / "full-export"
@@ -196,17 +201,36 @@ class PipelineRunner:
             domain_source = source / domain
             if domain_source.is_dir():
                 shutil.copytree(domain_source, ready / f"{title}")
-        shutil.copy2(source / "manifest.json", ready / "manifest.json")
         navigation = data_dir / "process-navigation" / "full-export"
         if navigation.is_dir():
-            shutil.copytree(navigation, ready / "资料导航")
+            (ready / "资料导航").mkdir()
+            for path in navigation.glob("*.docx"):
+                shutil.copy2(path, ready / "资料导航" / path.name)
         manifest = json.loads((source / "manifest.json").read_text(encoding="utf-8"))
         nav_manifest_path = data_dir / "process-navigation" / "full-export" / "manifest.json"
         nav_manifest = json.loads(nav_manifest_path.read_text(encoding="utf-8")) if nav_manifest_path.exists() else {"documents": []}
+        portable = {
+            "source_count": manifest.get("source_count", 0),
+            "built_sources": manifest.get("built_sources", 0),
+            "pending_sources": manifest.get("pending_sources", []),
+            "documents": [],
+        }
+        for item in manifest["documents"]:
+            portable["documents"].append({
+                **item, "path": f"{DOMAINS[item['domain']]}/{Path(item['path']).name}"
+            })
+        for item in nav_manifest["documents"]:
+            portable["documents"].append({
+                **item, "path": f"资料导航/{Path(item['path']).name}"
+            })
+        (ready / "manifest.json").write_text(
+            json.dumps(portable, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
         self._write_manifest_xlsx(ready / "manifest.xlsx", manifest["documents"], nav_manifest["documents"])
         verification_path = data_dir / "reports" / "full-corpus-verification.json"
         verification = json.loads(verification_path.read_text(encoding="utf-8"))
         self._write_report(ready / "quality-report.html", manifest, nav_manifest, verification)
+        self._write_upload_guide(ready / "上传说明.md", manifest, nav_manifest)
         zip_path = workspace / "dify-ready.zip"
         temp = zip_path.with_suffix(".tmp")
         with zipfile.ZipFile(temp, "w", zipfile.ZIP_DEFLATED) as archive:
@@ -261,6 +285,31 @@ class PipelineRunner:
 <h2>按知识库分类</h2><table><thead><tr><th>知识库</th><th>文档数</th></tr></thead><tbody>{rows}<tr><td>资料导航</td><td>{len(navigation['documents'])}</td></tr></tbody></table>
 <h2>核查摘要</h2><pre>{html.escape(json.dumps(verification, ensure_ascii=False, indent=2))}</pre></html>"""
         path.write_text(body, encoding="utf-8")
+
+    @staticmethod
+    def _write_upload_guide(path: Path, manifest: dict, navigation: dict) -> None:
+        counts: dict[str, int] = {}
+        for item in manifest["documents"]:
+            counts[item["domain"]] = counts.get(item["domain"], 0) + 1
+        rows = "\n".join(
+            f"| {DOMAINS[domain]} | {count} | `{DOMAINS[domain]}/` |"
+            for domain, count in sorted(counts.items())
+        )
+        path.write_text(
+            "# Dify 手工上传说明\n\n"
+            "1. 在 Dify 的「知识」页面按下表创建知识库，每个业务分类一个库。"
+            "资料导航单独建库。\n"
+            "2. 建议选择高质量索引、父子分段，父级按整份章节文档、子级约 500 tokens，"
+            "检索选混合检索。创建前先用少量文件预览分段。\n"
+            "3. 解压后进入每个分类目录，只选择其中的 `.docx` 文件，"
+            "上传到表中对应的知识库。不要上传 `manifest.json` 或质量报告。\n"
+            "4. 等待 Dify 索引完成，再用来源文件名、章节名和事务码做检索测试。"
+            "本包的 `manifest.xlsx` 可用于核对数量和来源页码。\n\n"
+            "| 知识库 | DOCX 数量 | 上传目录 |\n| --- | ---: | --- |\n"
+            f"{rows}\n| 资料导航 | {len(navigation['documents'])} | `资料导航/` |\n\n"
+            "文档业务有效性和截图 OCR 结果仍需业务人员复核。\n",
+            encoding="utf-8",
+        )
 
     def _sync_dify(self, job_id: str, config_path: Path, workspace: Path) -> None:
         secrets = self.secrets.read()

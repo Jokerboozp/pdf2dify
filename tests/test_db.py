@@ -1,6 +1,8 @@
 from pathlib import Path
 
 from pdf2dify.db import Database
+from pdf2dify.jobs import JobService
+from pdf2dify.config import Settings
 
 
 def test_job_lifecycle_and_atomic_claim(tmp_path: Path):
@@ -41,3 +43,31 @@ def test_interrupted_running_job_is_requeued(tmp_path: Path):
     assert db.recover_interrupted_jobs() == [job["id"]]
     assert db.get_job(job["id"])["status"] == "queued"
     assert "自动重新排队" in db.list_events(job["id"])[-1]["message"]
+
+
+def test_worker_cannot_claim_upload_until_copy_finishes(tmp_path: Path):
+    class InspectingStream:
+        def __init__(self, database):
+            self.database = database
+            self.called = False
+
+        def read(self, _size=-1):
+            if not self.called:
+                self.called = True
+                assert self.database.claim_next_job() is None
+                return b"%PDF-test"
+            return b""
+
+    db = Database(tmp_path / "data" / "test.db")
+    db.init()
+    settings = Settings(
+        project_root=tmp_path, data_dir=tmp_path / "data", database_path=db.path,
+        engine_root=tmp_path / "engine", engine_python=tmp_path / "engine" / "python.exe",
+    )
+    job = JobService(settings, db).create_upload_job(
+        name="上传", mode="export", fixed_domain="finance",
+        files=[("nested/manual.pdf", InspectingStream(db))],
+    )
+    assert job["status"] == "queued"
+    assert (settings.data_dir / "uploads" / job["id"] / "nested" / "manual.pdf").read_bytes() == b"%PDF-test"
+    assert db.claim_next_job()["id"] == job["id"]
