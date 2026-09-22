@@ -162,6 +162,20 @@ class Database:
             conn.execute("COMMIT")
             return self.get_job(row["id"]) if updated.rowcount == 1 else None
 
+    def recover_interrupted_jobs(self) -> list[str]:
+        """Return jobs owned by a previous worker process to the durable queue."""
+        with self.connect() as conn:
+            rows = conn.execute("SELECT id FROM jobs WHERE status='running'").fetchall()
+            job_ids = [row["id"] for row in rows]
+            if job_ids:
+                conn.execute(
+                    """UPDATE jobs SET status='queued', message='Worker 中断，等待断点续跑',
+                    updated_at=? WHERE status='running'""", (utcnow(),)
+                )
+        for job_id in job_ids:
+            self.add_event(job_id, "warning", "检测到上次 Worker 中断，任务已自动重新排队")
+        return job_ids
+
     def add_event(self, job_id: str, level: str, message: str,
                   data: dict[str, Any] | None = None) -> int:
         with self.connect() as conn:

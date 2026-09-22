@@ -1,3 +1,0 @@
-[console_scripts]
-pdf2dify-api = pdf2dify.main:run
-pdf2dify-worker = pdf2dify.worker:run

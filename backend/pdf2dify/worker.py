@@ -13,6 +13,7 @@ def run() -> None:
     settings.ensure()
     db = Database(settings.database_path)
     db.init()
+    recovered = db.recover_interrupted_jobs()
     runner = PipelineRunner(settings, db)
     stopping = False
 
@@ -23,7 +24,7 @@ def run() -> None:
     signal.signal(signal.SIGINT, stop)
     if hasattr(signal, "SIGTERM"):
         signal.signal(signal.SIGTERM, stop)
-    print(f"pdf2dify worker started; database={settings.database_path}", flush=True)
+    print(f"pdf2dify worker started; database={settings.database_path}; recovered={len(recovered)}", flush=True)
     while not stopping:
         job = db.claim_next_job()
         if job:
@@ -34,4 +35,3 @@ def run() -> None:
 
 if __name__ == "__main__":
     run()
-

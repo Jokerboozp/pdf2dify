@@ -31,3 +31,13 @@ def test_file_classification_persists_across_rescan(tmp_path: Path):
     assert saved["domain"] == "finance"
     assert saved["classification_status"] == "confirmed"
 
+
+def test_interrupted_running_job_is_requeued(tmp_path: Path):
+    db = Database(tmp_path / "test.db")
+    db.init()
+    job = db.create_job(name="恢复", source_type="path_directory", source_path=str(tmp_path), mode="export", fixed_domain=None)
+    claimed = db.claim_next_job()
+    assert claimed and claimed["status"] == "running"
+    assert db.recover_interrupted_jobs() == [job["id"]]
+    assert db.get_job(job["id"])["status"] == "queued"
+    assert "自动重新排队" in db.list_events(job["id"])[-1]["message"]

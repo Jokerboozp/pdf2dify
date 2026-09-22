@@ -49,20 +49,23 @@ class JobService:
             raise ValueError("至少上传一个 PDF")
         if fixed_domain and fixed_domain not in DOMAINS:
             raise ValueError("未知业务分类")
+        normalized_files: list[tuple[Path, BinaryIO]] = []
+        for raw_name, stream in files:
+            normalized = raw_name.replace("\\", "/").lstrip("/")
+            relative = Path(normalized)
+            if relative.suffix.lower() != ".pdf" or ".." in relative.parts or relative.is_absolute():
+                raise ValueError(f"不支持的上传文件：{raw_name}")
+            normalized_files.append((relative, stream))
         job = self.db.create_job(
             name=name, source_type="upload", source_path="",
             mode=mode, fixed_domain=fixed_domain,
         )
         root = self.settings.data_dir / "uploads" / job["id"]
         root.mkdir(parents=True, exist_ok=True)
-        for raw_name, stream in files:
-            normalized = raw_name.replace("\\", "/").lstrip("/")
-            relative = Path(normalized)
-            if relative.suffix.lower() != ".pdf" or ".." in relative.parts:
-                raise ValueError(f"不支持的上传文件：{raw_name}")
+        for relative, stream in normalized_files:
             target = (root / relative).resolve()
             if not target.is_relative_to(root.resolve()):
-                raise ValueError(f"非法文件路径：{raw_name}")
+                raise ValueError(f"非法文件路径：{relative}")
             target.parent.mkdir(parents=True, exist_ok=True)
             with target.open("wb") as output:
                 shutil.copyfileobj(stream, output)
@@ -102,4 +105,3 @@ class JobService:
             return job
         self.db.add_event(job_id, "warning", "已请求取消")
         return self.db.update_job(job_id, cancel_requested=1)
-
