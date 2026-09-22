@@ -1,0 +1,20 @@
+- id: month_close_formal_name
+  query: 财务月结业务流程
+  process_key: 6531b3feb04af8c5
+  must_contain: [维修工单结转, 项目成本结转, 制造费用分摊, 主营及其他业务成本结转, 油气生产成本, 输油输气业务月末结转]
+- id: month_close_alias
+  query: 财务月结
+  process_key: 6531b3feb04af8c5
+  must_contain: [财务月结业务流程, 全书章节导航]
+- id: master_object_not_oil_sales
+  query: 油气田单元创建流程
+  process_key: f44c1c7f7813c41f
+  must_contain: [录入主数据, 判断是否油藏, 入库主数据]
+- id: no_cover_name
+  query: 设备管理操作手册
+  process_key: 1500bced25fba85c
+  must_contain: [原文未提取到明确, 工厂内修, 工厂外修]
+- id: short_manual_without_step_summary
+  query: 原油生产入库流程
+  process_key: de5029274b6e30c6
+  must_contain: [MMBE, MB5B, 原文操作说明摘录]

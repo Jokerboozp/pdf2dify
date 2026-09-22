@@ -1,0 +1,10 @@
+# New questions written after candidate-budget repair and before running validation.
+cases:
+  - {id: mir7_amount, split: validation, query: MIR7 暂存发票时说这次核销的金额太大了，怎么处理？, expected: [2519c00a7aa329e5-finance-004]}
+  - {id: printed_manager, split: validation, query: 凭证上明明配过会计主管，打出来却没有主管名字, expected: [2519c00a7aa329e5-finance-019]}
+  - {id: sales_approval, split: validation, query: 销售发票送过账审批，点了以后一直没动静, expected: [2519c00a7aa329e5-finance-018]}
+  - {id: missing_parameter, split: validation, query: 系统不让我操作，说我这个用户的参数还没有配, expected: [2519c00a7aa329e5-finance-017]}
+  - {id: collection_account, split: validation, query: 内部交易托收没成功，说付款人的账号不是内部结算户, expected: [2519c00a7aa329e5-internal-006]}
+  - {id: payment_quota, split: validation, query: 钱没付出去，退回信息说支付额度规则已经失效了, expected: [2519c00a7aa329e5-funds-020]}
+  - {id: secondary_auth, split: validation, query: 资金收付第二次授权怎么搞？, expected: [2519c00a7aa329e5-funds-007]}
+  - {id: contract_push, split: validation, query: 这张采购发票往合同那边传，一直说一条数据也找不到, expected: [2519c00a7aa329e5-finance-015]}

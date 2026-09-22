@@ -1,0 +1,14 @@
+# Run these in the real Dify app; the retrieval-only script does not test routing.
+- query: 工作中心主数据创建、查询
+  expected_answer_node: 返回图文答案
+  source: 设备管理操作手册.pdf
+  expected_codes: [IR01, IR03]
+  expected_pdf_pages: [13, 14, 15, 16]
+  excluded_response: 未在目录中定位
+  check: Explain creation and query separately; do not invent required fields or clicks from screenshot labels.
+- query: 功能位置主数据创建、查询
+  expected_answer_node: 返回图文答案
+  source: 设备管理操作手册.pdf
+  expected_codes: [IL01, IL03]
+  expected_pdf_pages: [19, 20, 21, 22]
+  check: Keep the functional-location operation distinct from work-center and equipment creation.

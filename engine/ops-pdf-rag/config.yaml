@@ -1,0 +1,45 @@
+source_root: D:/PDF版本
+local_retrieval:
+  embedding_model: BAAI/bge-small-zh-v1.5
+  rerank_model: BAAI/bge-reranker-base
+  threads: 3
+  batch_size: 8
+  window_chars: 300
+  overlap_chars: 60
+  recall_k: 60
+  rerank_k: 24
+  rrf_k: 60
+retrieval_service:
+  max_pending_requests: 8
+  queue_wait_seconds: 60
+data_dir: data
+ocr:
+  engine: rapidocr
+  render_scale: 2.0
+  min_score: 0.75
+  cpu_threads: 4
+  # OCR screenshots even when the page has a text layer.
+  image_min_width_pt: 100
+  image_min_height_pt: 45
+  # Reviewed decorative image objects (raw decoded image stream hashes).
+  ignored_image_sha256:
+    - 933810c2981e28840807134a11e2625dacd15d13becd2123fdb234297534d0fc
+    - 7ede6f55cb21112f4d795a7f2c4eef5a60c52897c36ff6f1fb9c8f17c80395fe
+    - c8af74c3d197e9aa4928e945c56b0d1ee3c1af0fcf4a1da12d27885d2d81b5e5
+    - 07777b15fda9427177ef468c90e874ee55902ee3af0a7856f832ef938e7f64a7
+    - c4f850e818f2b230b74224720638d5d361ed3767bfd5a0a02316e52d4579b3da
+pilot:
+  - name: 财务模块常见问题.pdf
+    pages: 3-22
+    module: 核算与资金
+  - name: 0.财务月结操作手册.pdf
+    pages: 8-22
+    module: 核算模块
+  - name: 设备管理操作手册.pdf
+    pages: 87-101
+    module: 设备管理
+dify:
+  dataset_name: ERP运维问答-清洗试点-20260916
+  indexing_technique: high_quality
+  top_k: 5
+  score_threshold_enabled: false
