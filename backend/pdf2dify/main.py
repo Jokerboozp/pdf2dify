@@ -126,6 +126,64 @@ def update_file_domain(job_id: str, file_id: str, payload: FileDomainUpdate):
         raise HTTPException(status_code=404, detail="文件不存在") from exc
 
 
+@app.get("/api/jobs/{job_id}/files/{file_id}/preview")
+def preview_source_pdf(job_id: str, file_id: str):
+    try:
+        db.get_job(job_id)
+    except KeyError as exc:
+        raise not_found(exc) from exc
+    item = next((row for row in db.list_files(job_id) if row["id"] == file_id), None)
+    if not item:
+        raise HTTPException(status_code=404, detail="文件不存在")
+    path = Path(item["absolute_path"])
+    if not path.is_file() or path.suffix.lower() != ".pdf":
+        raise HTTPException(status_code=404, detail="原 PDF 不可用")
+    return FileResponse(path, media_type="application/pdf", content_disposition_type="inline")
+
+
+@app.get("/api/jobs/{job_id}/documents")
+def list_documents(job_id: str):
+    try:
+        db.get_job(job_id)
+    except KeyError as exc:
+        raise not_found(exc) from exc
+    root = settings.data_dir / "jobs" / job_id / "engine-data"
+    result = []
+    for relative_manifest in ("full-export/manifest.json", "process-navigation/full-export/manifest.json"):
+        manifest = root / relative_manifest
+        if not manifest.is_file():
+            continue
+        payload = json.loads(manifest.read_text(encoding="utf-8"))
+        for item in payload.get("documents", []):
+            result.append({
+                "key": item["key"], "domain": item["domain"],
+                "source_name": item["source_name"], "title": item.get("metadata", {}).get("section_title", ""),
+                "pages": item.get("pages", []), "image_count": item.get("image_count", 0),
+            })
+    return result
+
+
+@app.get("/api/jobs/{job_id}/documents/{document_key}")
+def download_document(job_id: str, document_key: str):
+    try:
+        db.get_job(job_id)
+    except KeyError as exc:
+        raise not_found(exc) from exc
+    root = (settings.data_dir / "jobs" / job_id / "engine-data").resolve()
+    for relative_manifest in ("full-export/manifest.json", "process-navigation/full-export/manifest.json"):
+        manifest = root / relative_manifest
+        if not manifest.is_file():
+            continue
+        payload = json.loads(manifest.read_text(encoding="utf-8"))
+        item = next((entry for entry in payload.get("documents", []) if entry["key"] == document_key), None)
+        if item:
+            path = Path(item["path"]).resolve()
+            if not path.is_relative_to(root) or not path.is_file():
+                raise HTTPException(status_code=404, detail="章节文件不可用")
+            return FileResponse(path, filename=path.name)
+    raise HTTPException(status_code=404, detail="章节不存在")
+
+
 @app.get("/api/jobs/{job_id}/events")
 async def stream_events(job_id: str, after: int = 0):
     try:

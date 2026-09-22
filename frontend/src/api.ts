@@ -42,6 +42,15 @@ export interface Job {
 
 export interface Domain { id: string; name: string }
 
+export interface KnowledgeDocument {
+  key: string
+  domain: string
+  source_name: string
+  title: string
+  pages: number[]
+  image_count: number
+}
+
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, init)
   const body = await response.json().catch(() => ({}))
@@ -52,6 +61,7 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
 export const api = {
   jobs: () => request<Job[]>('/api/jobs'),
   job: (id: string) => request<Job>(`/api/jobs/${id}`),
+  documents: (id: string) => request<KnowledgeDocument[]>(`/api/jobs/${id}/documents`),
   domains: () => request<Domain[]>('/api/domains'),
   createPath: (payload: object) => request<Job>('/api/jobs', {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
@@ -67,4 +77,3 @@ export const api = {
   }),
   testDify: () => request<{ok: boolean; message: string}>('/api/settings/dify/test', { method: 'POST' }),
 }
-

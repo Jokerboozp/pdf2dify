@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
-import { api, type Domain, type Job } from './api'
+import { api, type Domain, type Job, type KnowledgeDocument } from './api'
 
 const jobs = ref<Job[]>([])
 const domains = ref<Domain[]>([])
 const selected = ref<Job | null>(null)
+const documents = ref<KnowledgeDocument[]>([])
 const showCreate = ref(false)
 const showSettings = ref(false)
 const busy = ref(false)
@@ -34,12 +35,18 @@ function flash(message: string, isError = false) {
 async function refresh() {
   try {
     jobs.value = await api.jobs()
-    if (selected.value) selected.value = await api.job(selected.value.id)
+    if (selected.value) {
+      selected.value = await api.job(selected.value.id)
+      documents.value = await api.documents(selected.value.id)
+    }
   } catch (e) { flash((e as Error).message, true) }
 }
 
 async function openJob(job: Job) {
-  try { selected.value = await api.job(job.id) }
+  try {
+    selected.value = await api.job(job.id)
+    documents.value = await api.documents(job.id)
+  }
   catch (e) { flash((e as Error).message, true) }
 }
 
@@ -103,6 +110,7 @@ async function saveDify(test = false) {
 
 function pickFiles(event: Event) {
   uploads.value = Array.from((event.target as HTMLInputElement).files || [])
+    .filter(file => file.name.toLowerCase().endsWith('.pdf'))
 }
 
 function formatTime(value: string) {
@@ -220,8 +228,17 @@ onUnmounted(() => timer && clearInterval(timer))
       <div class="files" v-if="selected.files?.length">
         <h3>来源文件</h3>
         <div v-for="file in selected.files" :key="file.id" class="mini-file">
-          <span>{{ file.name }}<small>{{ file.pages }} 页</small></span><b>{{ domainName(file.domain) }}</b>
+          <span><a target="_blank" :href="`/api/jobs/${selected.id}/files/${file.id}/preview`">{{ file.name }}</a><small>{{ file.pages }} 页</small></span><b>{{ domainName(file.domain) }}</b>
         </div>
+      </div>
+
+      <div v-if="documents.length" class="files">
+        <h3>生成的知识文档 · {{ documents.length }}</h3>
+        <div v-for="document in documents.slice(0, 120)" :key="document.key" class="mini-file">
+          <span><a :href="`/api/jobs/${selected.id}/documents/${document.key}`">{{ document.title || document.source_name }}</a><small>第 {{ document.pages.join('、') }} 页 · {{ document.image_count }} 图</small></span>
+          <b>{{ domainName(document.domain) === '未分类' ? '资料导航' : domainName(document.domain) }}</b>
+        </div>
+        <p v-if="documents.length > 120" class="hint">仅展示前 120 条，完整清单见 Excel 文件。</p>
       </div>
 
       <div class="timeline">
@@ -240,10 +257,17 @@ onUnmounted(() => timer && clearInterval(timer))
         <label>任务名称<input v-model="form.name" placeholder="例如：9 月新增财务手册" /></label>
         <div class="tabs"><button :class="{active: inputMode === 'path'}" @click="inputMode = 'path'">指定服务器路径</button><button :class="{active: inputMode === 'upload'}" @click="inputMode = 'upload'">上传 PDF</button></div>
         <label v-if="inputMode === 'path'">PDF 文件或目录<input v-model="form.source_path" placeholder="D:\PDF版本 或 D:\资料\手册.pdf" /></label>
-        <label v-else class="dropzone">选择一个或多个 PDF
-          <input type="file" accept="application/pdf,.pdf" multiple @change="pickFiles" />
-          <span>{{ uploads.length ? `已选择 ${uploads.length} 个文件` : '点击选择文件' }}</span>
-        </label>
+        <div v-else class="upload-choices">
+          <label class="dropzone">选择 PDF 文件
+            <input type="file" accept="application/pdf,.pdf" multiple @change="pickFiles" />
+            <span>多选文件</span>
+          </label>
+          <label class="dropzone">选择整个文件夹
+            <input type="file" webkitdirectory multiple @change="pickFiles" />
+            <span>保留文件夹内的分类路径</span>
+          </label>
+          <p class="hint">{{ uploads.length ? `已选择 ${uploads.length} 个 PDF` : '支持单个、多选和文件夹上传' }}</p>
+        </div>
         <div class="form-grid">
           <label>业务分类<select v-model="form.fixed_domain"><option value="">自动识别</option><option v-for="domain in domains" :key="domain.id" :value="domain.id">{{ domain.name }}</option></select></label>
           <label>完成动作<select v-model="form.mode"><option value="export">只生成入库包</option><option value="sync">生成并同步 Dify</option></select></label>
