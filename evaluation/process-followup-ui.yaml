@@ -1,0 +1,22 @@
+# Run in a single Dify conversation; retrieval API alone cannot verify memory.
+- turns:
+    - 油气田单元创建流程
+    - 01 系统录入油气田单元基本信息（含字段录入操作）
+  expected_source: f44c1c7f7813c41f
+  expected_document: ops-f44c1c7f7813c41f-master_ops-024.docx
+  expected_pdf_pages: [6, 7, 8, 9]
+  expected_answer_node: 返回图文答案（指定章节）
+  checks:
+    - 先查询已有数据，不存在才新建，核对后提交。
+    - 说明字段填写要求，保留自动生成与手工输入的区别。
+    - 原图实际加载，不只是存在 Markdown。
+    - 不要求用户再次提供已经定位的章节页码。
+- turns:
+    - 油气田单元创建流程
+    - 展开第一个，字段怎么填
+  expected_document: ops-f44c1c7f7813c41f-master_ops-024.docx
+- turns:
+    - 油气田单元创建流程
+    - 工作中心主数据创建、查询
+  checks:
+    - 本轮切换到设备管理手册，IR01/IR03，不继承油气田单元。

@@ -1,0 +1,33 @@
+name: ops-pdf-retrieval
+services:
+  retrieval:
+    build: .
+    image: ops-pdf-retrieval:local
+    restart: unless-stopped
+    init: true
+    env_file: .env
+    ports:
+      - "${RETRIEVAL_BIND_IP:?Run configure.py first}:${RETRIEVAL_PORT:-8765}:8765"
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+      - ./data:/app/data:ro
+    read_only: true
+    tmpfs:
+      - /tmp:size=128m,mode=1777
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    cpus: 4.0
+    mem_limit: 8g
+    pids_limit: 256
+    stop_grace_period: 30s
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8765/health', timeout=4).read()"]
+      interval: 30s
+      timeout: 5s
+      start_period: 90s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'

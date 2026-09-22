@@ -1,0 +1,32 @@
+# Human-reviewable source recall checks, not an answer accuracy benchmark.
+- domain: finance
+  query: 上市单位制造费用分摊怎么操作？
+  expected_sources: [0e18bf85322fcdb5, 6531b3feb04af8c5]
+- domain: funds
+  query: 付款申请岗如何创建并查询付款单？
+  expected_sources: [53cd1b181830a57d, 80fa99db74b07222]
+- domain: procurement
+  query: 采购管理岗如何创建调拨采购订单？
+  expected_sources: [b477fd4ed2023e8f, 1557ab341499f04e]
+- domain: projects
+  query: 项目已经结转，如何冲销撤销？
+  expected_sources: [2519c00a7aa329e5]
+- domain: internal
+  query: 内部交易管理岗如何申请白名单？
+  expected_sources: [4a066823cc785f7f]
+- domain: oilgas
+  query: 原油生产入库的操作步骤是什么？
+  expected_sources: [de5029274b6e30c6]
+- domain: equipment
+  query: 如何创建维修工单？
+  expected_sources: [1500bced25fba85c]
+- domain: master_ops
+  query: MDG 组织机构数据如何创建并提交审批？
+  expected_sources: [6790be8d4c07c360]
+  # The app first selects a source from its real manual catalog. This scope was
+  # independently verified in master-object-scope-ui.txt. This fixture tests the
+  # retrieval node after selection; it is not a test of the LLM source selector.
+  source_scope: 6790be8d4c07c360
+- domain: master_rules
+  query: 公司代码的编码规则是什么？
+  expected_sources: [d0982d2a84edab26]

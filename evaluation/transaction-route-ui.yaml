@@ -1,0 +1,23 @@
+# UI acceptance cases: run through the real chatflow, not the dataset API alone.
+# The dataset API cannot detect the reported mistake of taking the overview branch.
+- query: ZP0PSADG0019 - 物资需求提报
+  expected_answer_node: 返回图文答案
+  acceptable_sources:
+    - 新疆油田-物资采购培训.pdf
+    - 新疆油田-物资采购培训正向流程-定.pdf
+  expected_pdf_pages: [10, 11]
+  expected_actions: [新增, 检查, 保存, 草稿, 提交审批, BPM, 审批历史]
+  excluded_procedures: [其他类物资需求计划管理, 工单管理]
+  # The two source files' native text on pages 10/11 was compared and is identical.
+  expected_images: 2
+- query: 按照《新疆油田-物资采购培训.pdf》，ZP0PSADG0019 - 物资需求提报
+  expected_answer_node: 返回图文答案
+  acceptable_sources: [新疆油田-物资采购培训.pdf]
+  expected_pdf_pages: [10, 11]
+  expected_actions: [新增, 检查, 保存, 草稿, 提交审批, BPM, 审批历史]
+  expected_image_ids:
+    - 7ea0941b-e6b3-44fc-8b5d-dc9da2f21a46
+    - 98f383f0-6f70-4f20-a396-3e1b054be300
+- query: 财务月结业务流程
+  expected_answer_node: 返回流程概览
+  acceptable_sources: [0.财务月结操作手册.pdf]

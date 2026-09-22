@@ -1,0 +1,25 @@
+# Frozen before running the new models. These assess retrieval, not final answer accuracy.
+# No query-specific synonym rules are used in the index.
+cases:
+  - {id: project_undo, split: dev, query: 项目结转后怎么撤销？, expected: [2519c00a7aa329e5-projects-002]}
+  - {id: repair_undo, split: dev, query: 维修工单已经结算了想退回去重新来，怎么弄？, expected: [2519c00a7aa329e5-equipment-001]}
+  - {id: invoice_change, split: dev, query: 会计凭证填错了能在哪里改？, expected: [2519c00a7aa329e5-finance-005]}
+  - {id: account_locked, split: dev, query: 付款单的收款银行账号改不了怎么办？, expected: [2519c00a7aa329e5-funds-003]}
+  - {id: occupied_item, split: dev, query: 未清项被另一张付款单占着了怎么办？, expected: [2519c00a7aa329e5-funds-004]}
+  - {id: basic_role, split: dev, query: 系统报没有基础角色该怎么处理？, expected: [2519c00a7aa329e5-funds-005]}
+  - {id: approval_empty, split: dev, query: 内部交易采购没法送审批，说交易单审批状态是空的, expected: [2519c00a7aa329e5-internal-004]}
+  - {id: cleared_overdue, split: dev, query: 应付的账都清了为什么还是逾期？, expected: [2519c00a7aa329e5-finance-008]}
+  - {id: project_undo_holdout, split: holdout, query: 项目月末结算做完发现不对，想冲回之前的结转, expected: [2519c00a7aa329e5-projects-002]}
+  - {id: repair_code, split: holdout, query: KO8G 结转错了可以撤回吗, expected: [2519c00a7aa329e5-equipment-001]}
+  - {id: invoice_reversed, split: holdout, query: 怎么确认那张会计凭证到底有没有被作废冲掉？, expected: [2519c00a7aa329e5-finance-013]}
+  - {id: accounting_closed, split: holdout, query: 预制采购发票撤销不了，说账期关了, expected: [2519c00a7aa329e5-finance-010]}
+  - {id: invalid_date, split: holdout, query: 付款单一提交就说日期不合法, expected: [2519c00a7aa329e5-funds-013]}
+  - {id: rejected_payment, split: holdout, query: 共享把付款单打回来了，再提交提示不满足制证条件, expected: [2519c00a7aa329e5-funds-014]}
+  - {id: cost_range, split: holdout, query: 收退款冲成本的时候功能范围错了, expected: [2519c00a7aa329e5-funds-008]}
+  - {id: invisible_actual, split: holdout, query: 替单页面怎么找不到实单？, expected: [2519c00a7aa329e5-funds-017]}
+  - {id: sales_bank, split: holdout, query: 内部销售交不上去，提示卖方银行资料有问题, expected: [2519c00a7aa329e5-internal-002]}
+  - {id: whitelist, split: holdout, query: 白名单录单号一直说不存在怎么办, expected: [2519c00a7aa329e5-internal-005]}
+  - {id: payroll, split: holdout, query: HR 薪酬支付没启用所以生成不了付款单, expected: [2519c00a7aa329e5-funds-018]}
+  - {id: finance_overview, split: holdout, query: 财务月结, kind: overview, expected: [nav-6531b3feb04af8c5]}
+  - {id: oilfield_overview, split: holdout, query: 怎么新增油气田单元？想看整个流程, kind: overview, expected: [nav-f44c1c7f7813c41f]}
+  - {id: listed_scope, split: regression, query: 制造费用分摊上市部分怎么操作, domain: finance, source_id: 0e18bf85322fcdb5, section_prefix: '1.1.', forbidden_prefix: '1.2.', expected: [0e18bf85322fcdb5-finance-008, 0e18bf85322fcdb5-finance-009, 0e18bf85322fcdb5-finance-010, 0e18bf85322fcdb5-finance-011, 0e18bf85322fcdb5-finance-012]}
