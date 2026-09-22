@@ -1,0 +1,315 @@
+from __future__ import annotations
+
+import json
+import os
+import shutil
+import subprocess
+import time
+import zipfile
+import html
+from pathlib import Path
+from typing import Callable
+
+from openpyxl import Workbook
+from openpyxl.styles import Font, PatternFill
+
+from .config import SecretStore, Settings
+from .db import Database, utcnow
+from .domains import DOMAINS, classify_path
+from .jobs import JobService
+
+
+class JobCancelled(Exception):
+    pass
+
+
+class JobPaused(Exception):
+    pass
+
+
+class NeedsReview(Exception):
+    pass
+
+
+STAGES = [
+    ("scan", "扫描 PDF", 8),
+    ("native", "提取原生文字和图片", 22),
+    ("process", "执行 OCR", 52),
+    ("build", "生成章节 DOCX", 72),
+    ("navigation", "生成资料导航", 79),
+    ("verify", "质量核查", 85),
+    ("package", "整理 Dify 入库包", 90),
+]
+
+
+class PipelineRunner:
+    def __init__(self, settings: Settings, db: Database):
+        self.settings = settings
+        self.db = db
+        self.jobs = JobService(settings, db)
+        self.secrets = SecretStore(settings)
+
+    def run(self, job: dict) -> None:
+        job_id = job["id"]
+        workspace = self.settings.data_dir / "jobs" / job_id
+        workspace.mkdir(parents=True, exist_ok=True)
+        data_dir = workspace / "engine-data"
+        data_dir.mkdir(parents=True, exist_ok=True)
+        config_path = workspace / "config.yaml"
+        source_root = self.jobs.source_root(job)
+        self._write_engine_config(config_path, source_root, data_dir)
+        self.db.update_job(job_id, output_dir=str(workspace), error=None)
+
+        try:
+            for stage, title, progress in STAGES:
+                self._guard(job_id)
+                if self._stage_complete(workspace, stage):
+                    self.db.add_event(job_id, "info", f"跳过已完成阶段：{title}")
+                    continue
+                self.db.update_job(job_id, stage=stage, progress=progress, message=title)
+                self.db.add_event(job_id, "info", f"开始：{title}")
+                if stage == "scan":
+                    self._run_engine(job_id, "scan", config_path)
+                    self._load_inventory(job_id, data_dir, job.get("fixed_domain"))
+                    unresolved = [item for item in self.db.list_files(job_id) if not item.get("domain")]
+                    if unresolved:
+                        self.db.add_event(job_id, "warning", f"有 {len(unresolved)} 个文件需要选择业务分类")
+                        raise NeedsReview
+                elif stage in {"native", "process", "navigation", "verify"}:
+                    self._run_engine(job_id, stage, config_path)
+                    if stage == "process":
+                        current = self.db.get_job(job_id)
+                        self.db.update_job(job_id, processed_pages=current["total_pages"])
+                elif stage == "build":
+                    classifications = workspace / "classifications.json"
+                    mapping = {
+                        item["source_id"]: item["domain"] for item in self.db.list_files(job_id)
+                        if item["classification_status"] == "confirmed"
+                    }
+                    classifications.write_text(json.dumps(mapping, ensure_ascii=False, indent=2), encoding="utf-8")
+                    self._run_engine(job_id, stage, config_path, ["--classifications", str(classifications)])
+                elif stage == "package":
+                    self._package(data_dir, workspace)
+                self._mark_stage(workspace, stage)
+                self.db.add_event(job_id, "info", f"完成：{title}")
+
+            if job["mode"] == "sync":
+                self._sync_dify(job_id, config_path, workspace)
+            self.db.update_job(
+                job_id, status="completed", stage="completed", progress=100,
+                message="处理完成", finished_at=utcnow(), processed_files=len(self.db.list_files(job_id)),
+                processed_pages=self.db.get_job(job_id)["total_pages"],
+            )
+            self.db.set_all_file_status(job_id, "completed")
+            self.db.add_event(job_id, "info", "任务已完成")
+        except NeedsReview:
+            self.db.update_job(job_id, status="needs_review", stage="classification", message="等待人工分类")
+        except JobPaused:
+            self.db.update_job(job_id, status="paused", message="任务已暂停")
+            self.db.add_event(job_id, "info", "任务已暂停")
+        except JobCancelled:
+            self.db.update_job(job_id, status="cancelled", message="任务已取消", finished_at=utcnow())
+            self.db.add_event(job_id, "warning", "任务已取消")
+        except Exception as exc:
+            message = f"{type(exc).__name__}: {exc}"
+            self.db.update_job(job_id, status="failed", message="处理失败", error=message, finished_at=utcnow())
+            self.db.add_event(job_id, "error", message)
+
+    def _write_engine_config(self, path: Path, source_root: Path, data_dir: Path) -> None:
+        config = {
+            "source_root": str(source_root.resolve()),
+            "data_dir": str(data_dir.resolve()),
+            "ocr": {
+                "engine": "rapidocr", "render_scale": 2.0, "min_score": 0.75,
+                "cpu_threads": 4, "image_min_width_pt": 100, "image_min_height_pt": 45,
+                "ignored_image_sha256": [],
+            },
+            "pilot": [],
+            "dify": {"dataset_name": "pdf2dify", "indexing_technique": "high_quality", "top_k": 6,
+                     "score_threshold_enabled": False},
+        }
+        path.write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def _run_engine(self, job_id: str, stage: str, config_path: Path,
+                    extra: list[str] | None = None) -> None:
+        if not self.settings.engine_python.is_file():
+            raise FileNotFoundError(f"解析引擎 Python 不存在：{self.settings.engine_python}")
+        if not (self.settings.engine_root / "src" / "ops_rag").is_dir():
+            raise FileNotFoundError(f"解析引擎目录无效：{self.settings.engine_root}")
+        bridge = Path(__file__).with_name("engine_bridge.py")
+        command = [
+            str(self.settings.engine_python), str(bridge), stage,
+            "--engine-root", str(self.settings.engine_root), "--config", str(config_path),
+        ] + (extra or [])
+        env = os.environ.copy()
+        env.update(self.secrets.read())
+        process = subprocess.Popen(
+            command, cwd=self.settings.engine_root, stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace", env=env,
+        )
+        assert process.stdout is not None
+        try:
+            while True:
+                line = process.stdout.readline()
+                if line:
+                    self.db.add_event(job_id, "engine", line.rstrip()[:4000])
+                if process.poll() is not None:
+                    break
+                current = self.db.get_job(job_id)
+                if current["cancel_requested"]:
+                    process.terminate()
+                    raise JobCancelled
+                time.sleep(0.05)
+            for line in process.stdout:
+                self.db.add_event(job_id, "engine", line.rstrip()[:4000])
+            if process.returncode:
+                raise RuntimeError(f"阶段 {stage} 退出码 {process.returncode}")
+        finally:
+            if process.poll() is None:
+                process.terminate()
+
+    def _load_inventory(self, job_id: str, data_dir: Path, fixed_domain: str | None) -> None:
+        inventory = json.loads((data_dir / "inventory.json").read_text(encoding="utf-8"))
+        files = []
+        for item in inventory["documents"]:
+            domain = fixed_domain or classify_path(item["relative_path"], item["name"])
+            files.append({
+                **item,
+                "domain": domain,
+                "classification_status": "confirmed" if fixed_domain else ("automatic" if domain else "needs_review"),
+            })
+        self.db.upsert_files(job_id, files)
+        self.db.update_job(
+            job_id, total_files=inventory["file_count"], total_pages=inventory["total_pages"],
+            message=f"发现 {inventory['file_count']} 个 PDF，共 {inventory['total_pages']} 页",
+        )
+
+    def _package(self, data_dir: Path, workspace: Path) -> None:
+        source = data_dir / "full-export"
+        if not (source / "manifest.json").is_file():
+            raise FileNotFoundError("缺少导出清单")
+        ready = workspace / "dify-ready"
+        if ready.exists():
+            shutil.rmtree(ready)
+        ready.mkdir(parents=True)
+        for domain, title in DOMAINS.items():
+            domain_source = source / domain
+            if domain_source.is_dir():
+                shutil.copytree(domain_source, ready / f"{title}")
+        shutil.copy2(source / "manifest.json", ready / "manifest.json")
+        navigation = data_dir / "process-navigation" / "full-export"
+        if navigation.is_dir():
+            shutil.copytree(navigation, ready / "资料导航")
+        manifest = json.loads((source / "manifest.json").read_text(encoding="utf-8"))
+        nav_manifest_path = data_dir / "process-navigation" / "full-export" / "manifest.json"
+        nav_manifest = json.loads(nav_manifest_path.read_text(encoding="utf-8")) if nav_manifest_path.exists() else {"documents": []}
+        self._write_manifest_xlsx(ready / "manifest.xlsx", manifest["documents"], nav_manifest["documents"])
+        verification_path = data_dir / "reports" / "full-corpus-verification.json"
+        verification = json.loads(verification_path.read_text(encoding="utf-8"))
+        self._write_report(ready / "quality-report.html", manifest, nav_manifest, verification)
+        zip_path = workspace / "dify-ready.zip"
+        temp = zip_path.with_suffix(".tmp")
+        with zipfile.ZipFile(temp, "w", zipfile.ZIP_DEFLATED) as archive:
+            for path in ready.rglob("*"):
+                if path.is_file():
+                    archive.write(path, path.relative_to(ready).as_posix())
+        os.replace(temp, zip_path)
+
+    @staticmethod
+    def _write_manifest_xlsx(path: Path, documents: list[dict], navigation: list[dict]) -> None:
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.title = "Dify入库清单"
+        headers = ["类型", "业务分类", "来源文件", "章节标题", "PDF页码", "图片数", "source_id", "content_hash", "文件名"]
+        sheet.append(headers)
+        for cell in sheet[1]:
+            cell.font = Font(bold=True, color="FFFFFF")
+            cell.fill = PatternFill("solid", fgColor="176B4C")
+        for item in documents:
+            sheet.append([
+                "章节", DOMAINS.get(item["domain"], item["domain"]), item["source_name"],
+                item.get("metadata", {}).get("section_title", ""), "、".join(map(str, item.get("pages", []))),
+                item.get("image_count", 0), item["source_id"], item["content_hash"], Path(item["path"]).name,
+            ])
+        for item in navigation:
+            sheet.append([
+                "资料导航", "资料导航", item["source_name"], item.get("metadata", {}).get("section_title", ""),
+                "、".join(map(str, item.get("pages", []))), item.get("image_count", 0), item["source_id"],
+                item["content_hash"], Path(item["path"]).name,
+            ])
+        sheet.freeze_panes = "A2"
+        sheet.auto_filter.ref = sheet.dimensions
+        widths = [12, 16, 38, 42, 20, 10, 20, 68, 42]
+        for index, width in enumerate(widths, 1):
+            sheet.column_dimensions[chr(64 + index)].width = width
+        workbook.save(path)
+
+    @staticmethod
+    def _write_report(path: Path, manifest: dict, navigation: dict, verification: dict) -> None:
+        counts: dict[str, int] = {}
+        for item in manifest["documents"]:
+            counts[item["domain"]] = counts.get(item["domain"], 0) + 1
+        rows = "".join(
+            f"<tr><td>{html.escape(DOMAINS.get(domain, domain))}</td><td>{count}</td></tr>"
+            for domain, count in sorted(counts.items())
+        )
+        errors = verification.get("errors", [])
+        body = f"""<!doctype html><html lang='zh-CN'><meta charset='utf-8'>
+<title>pdf2dify 质量报告</title><style>body{{font:15px/1.7 system-ui;max-width:980px;margin:40px auto;color:#173126}}h1{{color:#176b4c}}table{{border-collapse:collapse;width:100%}}td,th{{border:1px solid #d6ddd8;padding:9px;text-align:left}}th{{background:#edf4ef}}.ok{{color:#176b4c}}.bad{{color:#a9362a}}</style>
+<h1>pdf2dify 技术质量报告</h1><p>来源文件：{manifest.get('source_count', 0)}；章节文档：{len(manifest['documents'])}；资料导航：{len(navigation['documents'])}。</p>
+<p class='{'ok' if not errors else 'bad'}'>技术核查：{'通过' if not errors else f'发现 {len(errors)} 个错误'}。业务内容仍需业务人员复核。</p>
+<h2>按知识库分类</h2><table><thead><tr><th>知识库</th><th>文档数</th></tr></thead><tbody>{rows}<tr><td>资料导航</td><td>{len(navigation['documents'])}</td></tr></tbody></table>
+<h2>核查摘要</h2><pre>{html.escape(json.dumps(verification, ensure_ascii=False, indent=2))}</pre></html>"""
+        path.write_text(body, encoding="utf-8")
+
+    def _sync_dify(self, job_id: str, config_path: Path, workspace: Path) -> None:
+        secrets = self.secrets.read()
+        if not secrets.get("DIFY_BASE_URL") or not secrets.get("DIFY_DATASET_API_KEY"):
+            raise ValueError("尚未配置 Dify 地址或知识库 API Key")
+        for stage, title, progress in (
+            ("dify-setup", "创建或映射 Dify 知识库", 92),
+            ("dify-upload", "上传并更新 Dify 文档", 95),
+            ("nav-setup", "创建或映射资料导航库", 96),
+            ("nav-upload", "上传资料导航", 97),
+        ):
+            self._guard(job_id)
+            self.db.update_job(job_id, stage=stage, progress=progress, message=title)
+            self.db.add_event(job_id, "info", f"开始：{title}")
+            self._run_engine(job_id, stage, config_path)
+        deadline = time.monotonic() + 12 * 60 * 60
+        while True:
+            self._guard(job_id)
+            self.db.update_job(job_id, stage="indexing", progress=98, message="等待 Dify 索引")
+            self._run_engine(job_id, "dify-status", config_path)
+            self._run_engine(job_id, "nav-status", config_path)
+            report = workspace / "engine-data" / "reports" / "full-indexing.json"
+            state = json.loads(report.read_text(encoding="utf-8")) if report.exists() else {}
+            domains = state.get("domains", {})
+            pending = sum(len(value.get("target", {}).get("pending", [])) for value in domains.values())
+            nav_report = workspace / "engine-data" / "reports" / "process-navigation-status.json"
+            nav_state = json.loads(nav_report.read_text(encoding="utf-8")) if nav_report.exists() else {}
+            nav_pending = len(nav_state.get("pending", []))
+            if domains and pending == 0 and nav_state and nav_pending == 0:
+                break
+            if time.monotonic() >= deadline:
+                raise TimeoutError("等待 Dify 索引超过 12 小时，可稍后继续任务")
+            time.sleep(30)
+
+    def _guard(self, job_id: str) -> None:
+        current = self.db.get_job(job_id)
+        if current["cancel_requested"]:
+            raise JobCancelled
+        if current["pause_requested"]:
+            raise JobPaused
+
+    @staticmethod
+    def _marker(workspace: Path, stage: str) -> Path:
+        return workspace / "checkpoints" / f"{stage}.done"
+
+    def _stage_complete(self, workspace: Path, stage: str) -> bool:
+        return self._marker(workspace, stage).is_file()
+
+    def _mark_stage(self, workspace: Path, stage: str) -> None:
+        marker = self._marker(workspace, stage)
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(utcnow(), encoding="utf-8")
