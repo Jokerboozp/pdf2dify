@@ -61,8 +61,13 @@ class SecretStore:
     def update(self, values: dict[str, str | None]) -> None:
         current = self.read()
         for key, value in values.items():
-            if value is not None and value != "":
-                current[key] = value.rstrip("/") if key == "DIFY_BASE_URL" else value
+            if value is None or (key == "DIFY_DATASET_API_KEY" and value == ""):
+                continue
+            normalized = value.rstrip("/") if key == "DIFY_BASE_URL" else value
+            if normalized == "":
+                current.pop(key, None)
+            else:
+                current[key] = normalized
         self.path.parent.mkdir(parents=True, exist_ok=True)
         temp = self.path.with_suffix(".tmp")
         temp.write_text(json.dumps(current, ensure_ascii=False, indent=2), encoding="utf-8")

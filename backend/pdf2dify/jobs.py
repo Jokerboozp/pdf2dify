@@ -40,7 +40,7 @@ class JobService:
                 copied = target / path.name
                 shutil.copy2(path, copied)
                 self.db.add_event(job["id"], "info", "文件已复制到任务工作区")
-                return self.db.update_job(job["id"], status="queued", message="等待处理")
+                return self.db.complete_preparing(job["id"])
             except Exception as exc:
                 self.db.update_job(job["id"], status="failed", error=str(exc), message="复制文件失败")
                 raise
@@ -77,7 +77,7 @@ class JobService:
                 with target.open("wb") as output:
                     shutil.copyfileobj(stream, output)
             self.db.add_event(job["id"], "info", f"已接收 {len(files)} 个 PDF")
-            return self.db.update_job(job["id"], status="queued", message="等待处理")
+            return self.db.complete_preparing(job["id"])
         except Exception as exc:
             self.db.update_job(job["id"], status="failed", error=str(exc), message="上传失败")
             raise
@@ -90,11 +90,14 @@ class JobService:
         return Path(job["source_path"])
 
     def request_pause(self, job_id: str) -> dict:
-        job = self.db.get_job(job_id)
-        if job["status"] in TERMINAL_STATUSES:
-            return job
-        self.db.add_event(job_id, "info", "已请求暂停，当前阶段结束后生效")
-        return self.db.update_job(job_id, pause_requested=1)
+        current = self.db.get_job(job_id)
+        if current["status"] in TERMINAL_STATUSES:
+            return current
+        job = self.db.request_control(job_id, "pause")
+        if job["status"] not in TERMINAL_STATUSES:
+            message = "任务已暂停" if job["status"] == "paused" else "已请求暂停，当前阶段结束后生效"
+            self.db.add_event(job_id, "info", message)
+        return job
 
     def resume(self, job_id: str) -> dict:
         job = self.db.get_job(job_id)
@@ -111,8 +114,11 @@ class JobService:
         )
 
     def cancel(self, job_id: str) -> dict:
-        job = self.db.get_job(job_id)
-        if job["status"] in TERMINAL_STATUSES:
-            return job
-        self.db.add_event(job_id, "warning", "已请求取消")
-        return self.db.update_job(job_id, cancel_requested=1)
+        current = self.db.get_job(job_id)
+        if current["status"] in TERMINAL_STATUSES:
+            return current
+        job = self.db.request_control(job_id, "cancel")
+        if job["status"] != "completed" and job["status"] != "failed":
+            message = "任务已取消" if job["status"] == "cancelled" else "已请求取消"
+            self.db.add_event(job_id, "warning", message)
+        return job

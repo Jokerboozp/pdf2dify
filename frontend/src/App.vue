@@ -81,8 +81,10 @@ async function createJob() {
 async function jobAction(action: string) {
   if (!selected.value) return
   try {
-    await api.action(selected.value.id, action)
-    flash(action === 'resume' ? '任务已继续' : action === 'pause' ? '已请求暂停' : '已请求取消')
+    const job = await api.action(selected.value.id, action)
+    flash(action === 'resume' ? '任务已继续' : action === 'pause'
+      ? (job.status === 'paused' ? '任务已暂停' : '已请求暂停')
+      : (job.status === 'cancelled' ? '任务已取消' : '已请求取消'))
     await refresh()
   } catch (e) { flash((e as Error).message, true) }
 }
@@ -242,7 +244,7 @@ onUnmounted(() => timer && clearInterval(timer))
       <div class="action-row">
         <button v-if="selected.status === 'running' || selected.status === 'queued'" class="ghost" @click="jobAction('pause')">暂停</button>
         <button v-if="selected.status === 'paused' || selected.status === 'failed'" class="primary" @click="jobAction('resume')">继续 / 重试</button>
-        <button v-if="!['completed','cancelled'].includes(selected.status)" class="danger" @click="jobAction('cancel')">取消</button>
+        <button v-if="!['completed','failed','cancelled'].includes(selected.status)" class="danger" @click="jobAction('cancel')">取消</button>
       </div>
 
       <div v-if="selected.status === 'completed'" class="artifacts">

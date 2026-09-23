@@ -61,8 +61,14 @@ def ensure_frontend() -> None:
         print("安装前端依赖", flush=True)
         command(npm, "ci", cwd=FRONTEND)
         dependency_marker.write_text(dependency_stamp, encoding="utf-8")
-    stamp = fingerprint(FRONTEND / "package.json", FRONTEND / "package-lock.json",
-                        *sorted((FRONTEND / "src").rglob("*.*")))
+    build_inputs = [
+        FRONTEND / "package.json", FRONTEND / "package-lock.json",
+        FRONTEND / "index.html", FRONTEND / "vite.config.ts",
+        *sorted(FRONTEND.glob("tsconfig*.json")),
+        *sorted((FRONTEND / "src").rglob("*")),
+        *sorted((FRONTEND / "public").rglob("*")),
+    ]
+    stamp = fingerprint(*(path for path in build_inputs if path.is_file()))
     marker = FRONTEND / "dist" / ".pdf2dify-build"
     if marker.is_file() and marker.read_text(encoding="utf-8") == stamp and (FRONTEND / "dist/index.html").is_file():
         return

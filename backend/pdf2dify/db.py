@@ -143,6 +143,63 @@ class Database:
                 raise KeyError(job_id)
         return self.get_job(job_id)
 
+    def request_control(self, job_id: str, action: str) -> dict[str, Any]:
+        """Apply a pause or cancel request atomically against worker claims."""
+        if action not in {"pause", "cancel"}:
+            raise ValueError(action)
+        stamp = utcnow()
+        with self.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
+            if row is None:
+                raise KeyError(job_id)
+            status = row["status"]
+            if status in {"completed", "failed", "cancelled"}:
+                conn.execute("COMMIT")
+                return dict(row)
+            if action == "pause":
+                if status in {"queued", "needs_review"}:
+                    fields = ("status='paused', message='任务已暂停', pause_requested=0", [])
+                else:
+                    fields = ("pause_requested=1", [])
+            elif status in {"queued", "paused", "needs_review"}:
+                fields = ("status='cancelled', message='任务已取消', finished_at=?, cancel_requested=0", [stamp])
+            else:
+                fields = ("cancel_requested=1", [])
+            assignments, values = fields
+            conn.execute(
+                f"UPDATE jobs SET {assignments}, updated_at=? WHERE id=?",
+                [*values, stamp, job_id],
+            )
+            result = dict(conn.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone())
+            conn.execute("COMMIT")
+            return result
+
+    def complete_preparing(self, job_id: str) -> dict[str, Any]:
+        """Publish a copied upload without losing a pause or cancel request."""
+        stamp = utcnow()
+        with self.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
+            if row is None:
+                raise KeyError(job_id)
+            if row["status"] != "preparing":
+                raise ValueError(f"任务不能完成准备阶段：{row['status']}")
+            if row["cancel_requested"]:
+                status, message, finished_at = "cancelled", "任务已取消", stamp
+            elif row["pause_requested"]:
+                status, message, finished_at = "paused", "任务已暂停", None
+            else:
+                status, message, finished_at = "queued", "等待处理", None
+            conn.execute(
+                """UPDATE jobs SET status=?, message=?, finished_at=?,
+                cancel_requested=0, pause_requested=0, updated_at=? WHERE id=?""",
+                (status, message, finished_at, stamp, job_id),
+            )
+            result = dict(conn.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone())
+            conn.execute("COMMIT")
+            return result
+
     def claim_next_job(self) -> dict[str, Any] | None:
         with self.connect() as conn:
             conn.execute("BEGIN IMMEDIATE")

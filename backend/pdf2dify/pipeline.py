@@ -8,6 +8,8 @@ import time
 import zipfile
 import html
 import hashlib
+import queue
+import threading
 from pathlib import Path
 
 from openpyxl import Workbook
@@ -153,25 +155,53 @@ class PipelineRunner:
             stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace", env=env,
         )
         assert process.stdout is not None
+        output: queue.Queue[str] = queue.Queue(maxsize=1000)
+        dropped_lines = 0
+
+        def collect_output() -> None:
+            nonlocal dropped_lines
+            for line in process.stdout:
+                try:
+                    output.put_nowait(line)
+                except queue.Full:
+                    dropped_lines += 1
+
+        reader = threading.Thread(target=collect_output, daemon=True)
+        reader.start()
+
+        def drain_output(limit: int = 100) -> None:
+            for _ in range(limit):
+                try:
+                    line = output.get_nowait()
+                except queue.Empty:
+                    break
+                self.db.add_event(job_id, "engine", line.rstrip()[:4000])
+
         try:
             while True:
-                line = process.stdout.readline()
-                if line:
-                    self.db.add_event(job_id, "engine", line.rstrip()[:4000])
-                if process.poll() is not None:
-                    break
+                drain_output()
                 current = self.db.get_job(job_id)
                 if current["cancel_requested"]:
                     process.terminate()
                     raise JobCancelled
-                time.sleep(0.05)
-            for line in process.stdout:
-                self.db.add_event(job_id, "engine", line.rstrip()[:4000])
+                if process.poll() is not None:
+                    break
+                time.sleep(0.1)
+            reader.join(timeout=1)
+            drain_output(1000)
+            if dropped_lines:
+                self.db.add_event(job_id, "warning", f"引擎输出过快，省略 {dropped_lines} 行日志")
             if process.returncode:
                 raise RuntimeError(f"阶段 {stage} 退出码 {process.returncode}")
         finally:
             if process.poll() is None:
                 process.terminate()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+            reader.join(timeout=1)
 
     def _load_inventory(self, job_id: str, data_dir: Path, fixed_domain: str | None) -> None:
         inventory = json.loads((data_dir / "inventory.json").read_text(encoding="utf-8"))
