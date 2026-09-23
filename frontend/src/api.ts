@@ -40,7 +40,7 @@ export interface Job {
   events?: JobEvent[]
 }
 
-export interface Domain { id: string; name: string }
+export interface Domain { id: string; name: string; custom: boolean }
 
 export interface KnowledgeDocument {
   key: string
@@ -63,6 +63,12 @@ export const api = {
   job: (id: string) => request<Job>(`/api/jobs/${id}`),
   documents: (id: string) => request<KnowledgeDocument[]>(`/api/jobs/${id}/documents`),
   domains: () => request<Domain[]>('/api/domains'),
+  createDomain: (name: string) => request<Domain>('/api/domains', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }),
+  }),
+  renameDomain: (id: string, name: string) => request<Domain>(`/api/domains/${id}`, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }),
+  }),
   createPath: (payload: object) => request<Job>('/api/jobs', {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
   }),

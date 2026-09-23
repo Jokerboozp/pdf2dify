@@ -4,6 +4,7 @@ from pathlib import Path
 
 from openpyxl import load_workbook
 
+from pdf2dify.categories import CategoryStore
 from pdf2dify.config import Settings
 from pdf2dify.db import Database
 from pdf2dify.pipeline import PipelineRunner
@@ -18,6 +19,9 @@ def test_manual_package_has_portable_paths_and_navigation(tmp_path: Path):
     export = data_dir / "full-export"
     (export / "finance").mkdir(parents=True)
     (export / "finance" / "one.docx").write_bytes(b"docx")
+    custom = CategoryStore(settings.data_dir).create("供应链合规")
+    (export / custom["id"]).mkdir()
+    (export / custom["id"] / "two.docx").write_bytes(b"docx")
     nav = data_dir / "process-navigation" / "full-export"
     nav.mkdir(parents=True)
     (nav / "flow.docx").write_bytes(b"docx")
@@ -30,6 +34,10 @@ def test_manual_package_has_portable_paths_and_navigation(tmp_path: Path):
             "metadata": {"section_title": "第一章"},
         }],
     }
+    content["documents"].append({
+        **content["documents"][0], "key": "two", "domain": custom["id"],
+        "path": str(export / custom["id"] / "two.docx"),
+    })
     (export / "manifest.json").write_text(json.dumps(content), encoding="utf-8")
     nav_content = {
         "documents": [{
@@ -50,11 +58,11 @@ def test_manual_package_has_portable_paths_and_navigation(tmp_path: Path):
 
     manifest = json.loads((workspace / "dify-ready" / "manifest.json").read_text(encoding="utf-8"))
     assert {item["path"] for item in manifest["documents"]} == {
-        "财务核算/one.docx", "资料导航/flow.docx",
+        "财务核算/one.docx", "供应链合规/two.docx", "资料导航/flow.docx",
     }
     assert all((workspace / "dify-ready" / item["path"]).is_file() for item in manifest["documents"])
     with zipfile.ZipFile(workspace / "dify-ready.zip") as archive:
         assert "上传说明.md" in archive.namelist()
         assert "资料导航/flow.docx" in archive.namelist()
     workbook = load_workbook(workspace / "dify-ready" / "manifest.xlsx", read_only=True)
-    assert workbook.active.max_row == 3
+    assert workbook.active.max_row == 4

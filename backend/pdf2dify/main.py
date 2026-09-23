@@ -11,10 +11,10 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from .config import SecretStore, Settings
+from .categories import CategoryStore
 from .db import Database
-from .domains import DOMAINS
 from .jobs import JobService
-from .schemas import DifySettingsUpdate, FileDomainUpdate, PathJobCreate
+from .schemas import CategoryUpsert, DifySettingsUpdate, FileDomainUpdate, PathJobCreate
 
 
 settings = Settings.load()
@@ -23,6 +23,7 @@ db = Database(settings.database_path)
 db.init()
 service = JobService(settings, db)
 secrets = SecretStore(settings)
+categories = CategoryStore(settings.data_dir)
 
 app = FastAPI(title="pdf2dify", version="0.1.0")
 app.add_middleware(
@@ -49,7 +50,25 @@ def health():
 
 @app.get("/api/domains")
 def domains():
-    return [{"id": key, "name": value} for key, value in DOMAINS.items()]
+    return categories.list()
+
+
+@app.post("/api/domains", status_code=201)
+def create_domain(payload: CategoryUpsert):
+    try:
+        return categories.create(payload.name)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.patch("/api/domains/{domain_id}")
+def rename_domain(domain_id: str, payload: CategoryUpsert):
+    try:
+        return categories.rename(domain_id, payload.name)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="分类不存在或不可编辑") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @app.get("/api/jobs")
@@ -120,6 +139,8 @@ def cancel_job(job_id: str):
 
 @app.patch("/api/jobs/{job_id}/files/{file_id}")
 def update_file_domain(job_id: str, file_id: str, payload: FileDomainUpdate):
+    if payload.domain not in categories.mapping():
+        raise HTTPException(status_code=422, detail="未知业务分类")
     try:
         return db.set_file_domain(job_id, file_id, payload.domain)
     except KeyError as exc:

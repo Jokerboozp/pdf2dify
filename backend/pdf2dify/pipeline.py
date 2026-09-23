@@ -14,8 +14,9 @@ from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill
 
 from .config import SecretStore, Settings
+from .categories import CategoryStore
 from .db import Database, utcnow
-from .domains import DOMAINS, classify_path
+from .domains import classify_path
 from .jobs import JobService
 
 
@@ -48,6 +49,7 @@ class PipelineRunner:
         self.db = db
         self.jobs = JobService(settings, db)
         self.secrets = SecretStore(settings)
+        self.categories = CategoryStore(settings.data_dir)
 
     def run(self, job: dict) -> None:
         job_id = job["id"]
@@ -125,6 +127,7 @@ class PipelineRunner:
                 "ignored_image_sha256": [],
             },
             "pilot": [],
+            "categories": self.categories.mapping(),
             "dify": {"dataset_name": "pdf2dify", "indexing_technique": "high_quality", "top_k": 6,
                      "score_threshold_enabled": False},
         }
@@ -193,6 +196,7 @@ class PipelineRunner:
             raise ValueError(f"{len(failed)} 个 PDF 无法读取：{names}")
 
     def _package(self, data_dir: Path, workspace: Path) -> None:
+        categories = self.categories.mapping()
         source = data_dir / "full-export"
         if not (source / "manifest.json").is_file():
             raise FileNotFoundError("缺少导出清单")
@@ -200,7 +204,7 @@ class PipelineRunner:
         if ready.exists():
             shutil.rmtree(ready)
         ready.mkdir(parents=True)
-        for domain, title in DOMAINS.items():
+        for domain, title in categories.items():
             domain_source = source / domain
             if domain_source.is_dir():
                 shutil.copytree(domain_source, ready / f"{title}")
@@ -220,7 +224,7 @@ class PipelineRunner:
         }
         for item in manifest["documents"]:
             portable["documents"].append({
-                **item, "path": f"{DOMAINS[item['domain']]}/{Path(item['path']).name}"
+                **item, "path": f"{categories[item['domain']]}/{Path(item['path']).name}"
             })
         for item in nav_manifest["documents"]:
             portable["documents"].append({
@@ -229,11 +233,11 @@ class PipelineRunner:
         (ready / "manifest.json").write_text(
             json.dumps(portable, ensure_ascii=False, indent=2), encoding="utf-8"
         )
-        self._write_manifest_xlsx(ready / "manifest.xlsx", manifest["documents"], nav_manifest["documents"])
+        self._write_manifest_xlsx(ready / "manifest.xlsx", manifest["documents"], nav_manifest["documents"], categories)
         verification_path = data_dir / "reports" / "full-corpus-verification.json"
         verification = json.loads(verification_path.read_text(encoding="utf-8"))
-        self._write_report(ready / "quality-report.html", manifest, nav_manifest, verification)
-        self._write_upload_guide(ready / "上传说明.md", manifest, nav_manifest)
+        self._write_report(ready / "quality-report.html", manifest, nav_manifest, verification, categories)
+        self._write_upload_guide(ready / "上传说明.md", manifest, nav_manifest, categories)
         zip_path = workspace / "dify-ready.zip"
         temp = zip_path.with_suffix(".tmp")
         with zipfile.ZipFile(temp, "w", zipfile.ZIP_DEFLATED) as archive:
@@ -243,7 +247,7 @@ class PipelineRunner:
         os.replace(temp, zip_path)
 
     @staticmethod
-    def _write_manifest_xlsx(path: Path, documents: list[dict], navigation: list[dict]) -> None:
+    def _write_manifest_xlsx(path: Path, documents: list[dict], navigation: list[dict], categories: dict[str, str]) -> None:
         workbook = Workbook()
         sheet = workbook.active
         sheet.title = "Dify入库清单"
@@ -254,7 +258,7 @@ class PipelineRunner:
             cell.fill = PatternFill("solid", fgColor="176B4C")
         for item in documents:
             sheet.append([
-                "章节", DOMAINS.get(item["domain"], item["domain"]), item["source_name"],
+                "章节", categories.get(item["domain"], item["domain"]), item["source_name"],
                 item.get("metadata", {}).get("section_title", ""), "、".join(map(str, item.get("pages", []))),
                 item.get("image_count", 0), item["source_id"], item["content_hash"], Path(item["path"]).name,
             ])
@@ -272,12 +276,12 @@ class PipelineRunner:
         workbook.save(path)
 
     @staticmethod
-    def _write_report(path: Path, manifest: dict, navigation: dict, verification: dict) -> None:
+    def _write_report(path: Path, manifest: dict, navigation: dict, verification: dict, categories: dict[str, str]) -> None:
         counts: dict[str, int] = {}
         for item in manifest["documents"]:
             counts[item["domain"]] = counts.get(item["domain"], 0) + 1
         rows = "".join(
-            f"<tr><td>{html.escape(DOMAINS.get(domain, domain))}</td><td>{count}</td></tr>"
+            f"<tr><td>{html.escape(categories.get(domain, domain))}</td><td>{count}</td></tr>"
             for domain, count in sorted(counts.items())
         )
         errors = verification.get("errors", [])
@@ -290,12 +294,12 @@ class PipelineRunner:
         path.write_text(body, encoding="utf-8")
 
     @staticmethod
-    def _write_upload_guide(path: Path, manifest: dict, navigation: dict) -> None:
+    def _write_upload_guide(path: Path, manifest: dict, navigation: dict, categories: dict[str, str]) -> None:
         counts: dict[str, int] = {}
         for item in manifest["documents"]:
             counts[item["domain"]] = counts.get(item["domain"], 0) + 1
         rows = "\n".join(
-            f"| {DOMAINS[domain]} | {count} | `{DOMAINS[domain]}/` |"
+            f"| {categories[domain]} | {count} | `{categories[domain]}/` |"
             for domain, count in sorted(counts.items())
         )
         path.write_text(

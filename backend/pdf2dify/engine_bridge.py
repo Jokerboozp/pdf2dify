@@ -198,7 +198,7 @@ def setup_datasets(cfg: dict, navigation: bool = False) -> dict:
         root = root / "process-navigation"
         categories = {"process_navigation": "资料导航"}
     else:
-        categories = DOMAINS
+        categories = cfg.get("categories", DOMAINS)
     state_path = root / "dify/full-state.json"
     state = read_json(state_path) if state_path.exists() else {"datasets": {}, "documents": {}}
     if state.get("base_url", base) != base:
@@ -219,23 +219,27 @@ def setup_datasets(cfg: dict, navigation: bool = False) -> dict:
                 raise ValueError(f"知识库映射无效：{domain}")
             dataset = by_id[mapped_id]
         else:
-            name = prefix + label
-            matches = [item for item in available if item["name"] == name]
-            if len(matches) > 1:
-                raise ValueError(f"知识库名称重复：{name}")
-            if matches:
-                dataset = matches[0]
+            old_id = state.get("datasets", {}).get(domain, {}).get("id")
+            if old_id and old_id in by_id:
+                dataset = by_id[old_id]
             else:
-                dataset = client.call("POST", "datasets", json={
-                    "name": name,
-                    "description": f"pdf2dify 本地 PDF 解析与 OCR；{label}。原文图片和页码保留，业务有效性待复核。",
-                    "permission": "only_me", "indexing_technique": "high_quality",
-                    "embedding_model": os.environ.get("DIFY_EMBEDDING_MODEL", "nomic-embed-text:latest"),
-                    "embedding_model_provider": os.environ.get("DIFY_EMBEDDING_PROVIDER", "langgenius/ollama/ollama"),
-                    "retrieval_model": retrieval_model(None if navigation else domain),
-                })
-                available.append(dataset)
-                by_id[dataset["id"]] = dataset
+                name = prefix + label
+                matches = [item for item in available if item["name"] == name]
+                if len(matches) > 1:
+                    raise ValueError(f"知识库名称重复：{name}")
+                if matches:
+                    dataset = matches[0]
+                else:
+                    dataset = client.call("POST", "datasets", json={
+                        "name": name,
+                        "description": f"pdf2dify 本地 PDF 解析与 OCR；{label}。原文图片和页码保留，业务有效性待复核。",
+                        "permission": "only_me", "indexing_technique": "high_quality",
+                        "embedding_model": os.environ.get("DIFY_EMBEDDING_MODEL", "nomic-embed-text:latest"),
+                        "embedding_model_provider": os.environ.get("DIFY_EMBEDDING_PROVIDER", "langgenius/ollama/ollama"),
+                        "retrieval_model": retrieval_model(None if navigation else domain),
+                    })
+                    available.append(dataset)
+                    by_id[dataset["id"]] = dataset
         old_id = state.get("datasets", {}).get(domain, {}).get("id")
         if old_id and old_id != dataset["id"] and state.get("documents"):
             raise ValueError(f"{domain} 已有同步回执，不能直接切换目标知识库")
@@ -263,6 +267,8 @@ def main() -> int:
     load_engine(engine_root)
     from ops_rag.common import config, read_json, write_json
     cfg = config(args.config)
+    from ops_rag import corpus
+    corpus.DOMAINS.update(cfg.get("categories", {}))
 
     if args.stage == "scan":
         from ops_rag.inventory import scan

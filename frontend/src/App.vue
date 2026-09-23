@@ -8,6 +8,8 @@ const selected = ref<Job | null>(null)
 const documents = ref<KnowledgeDocument[]>([])
 const showCreate = ref(false)
 const showSettings = ref(false)
+const showCategories = ref(false)
+const newCategoryName = ref('')
 const busy = ref(false)
 const notice = ref('')
 const error = ref('')
@@ -123,6 +125,28 @@ function formatTime(value: string) {
 
 function domainName(id: string | null) { return domains.value.find(d => d.id === id)?.name || '未分类' }
 
+async function createCategory() {
+  if (!newCategoryName.value.trim()) return
+  busy.value = true
+  try {
+    const category = await api.createDomain(newCategoryName.value)
+    domains.value = await api.domains()
+    newCategoryName.value = ''
+    flash(`已创建分类：${category.name}`)
+  } catch (e) { flash((e as Error).message, true) }
+  finally { busy.value = false }
+}
+
+async function renameCategory(category: Domain) {
+  const name = window.prompt('修改分类名称', category.name)
+  if (name === null || name.trim() === category.name) return
+  try {
+    await api.renameDomain(category.id, name)
+    domains.value = await api.domains()
+    flash('分类名称已更新')
+  } catch (e) { flash((e as Error).message, true) }
+}
+
 onMounted(async () => {
   domains.value = await api.domains()
   await refresh()
@@ -139,6 +163,7 @@ onUnmounted(() => timer && clearInterval(timer))
         <div><strong>pdf2dify</strong><span>PDF 知识库生产台</span></div>
       </div>
       <div class="top-actions">
+        <button class="ghost" @click="showCategories = true">分类管理</button>
         <button class="ghost" @click="openDifySettings">Dify 连接</button>
         <button class="primary" @click="showCreate = true">＋ 新建处理任务</button>
       </div>
@@ -201,7 +226,7 @@ onUnmounted(() => timer && clearInterval(timer))
 
       <div v-if="selected.status === 'needs_review'" class="review-box">
         <h3>需要选择业务分类</h3>
-        <p>未分类文件不会继续入库，其他处理结果已保留。</p>
+        <p>未分类文件不会继续入库，其他处理结果已保留。没有合适的分类可<a href="#" @click.prevent="showCategories = true">新增分类</a>。</p>
         <div v-for="file in selected.files?.filter(f => !f.domain)" :key="file.id" class="file-review">
           <span :title="file.relative_path">{{ file.name }}</span>
           <select @change="setDomain(file.id, ($event.target as HTMLSelectElement).value)">
@@ -260,7 +285,7 @@ onUnmounted(() => timer && clearInterval(timer))
         <p class="eyebrow">NEW PIPELINE RUN</p><h2>新建处理任务</h2>
         <label>任务名称<input v-model="form.name" placeholder="例如：9 月新增财务手册" /></label>
         <div class="tabs"><button :class="{active: inputMode === 'path'}" @click="inputMode = 'path'">指定服务器路径</button><button :class="{active: inputMode === 'upload'}" @click="inputMode = 'upload'">上传 PDF</button></div>
-        <label v-if="inputMode === 'path'">PDF 文件或目录<input v-model="form.source_path" placeholder="D:\PDF版本 或 D:\资料\手册.pdf" /></label>
+        <label v-if="inputMode === 'path'">PDF 文件或目录<input v-model="form.source_path" placeholder="例如：/home/user/pdfs 或 C:\资料\手册.pdf" /></label>
         <div v-else class="upload-choices">
           <label class="dropzone">选择 PDF 文件
             <input type="file" accept="application/pdf,.pdf" multiple @change="pickFiles" />
@@ -273,7 +298,7 @@ onUnmounted(() => timer && clearInterval(timer))
           <p class="hint">{{ uploads.length ? `已选择 ${uploads.length} 个 PDF` : '支持单个、多选和文件夹上传' }}</p>
         </div>
         <div class="form-grid">
-          <label>业务分类<select v-model="form.fixed_domain"><option value="">自动识别</option><option v-for="domain in domains" :key="domain.id" :value="domain.id">{{ domain.name }}</option></select></label>
+          <label>业务分类<select v-model="form.fixed_domain"><option value="">自动识别</option><option v-for="domain in domains" :key="domain.id" :value="domain.id">{{ domain.name }}</option></select><button class="text-button" type="button" @click="showCategories = true">＋ 新增分类</button></label>
           <label>完成动作<select v-model="form.mode"><option value="export">只生成入库包</option><option value="sync">生成并同步 Dify</option></select></label>
         </div>
         <p class="hint">自动识别不了的文件会暂停在“待分类”，已完成的解析不会丢失。</p>
@@ -293,12 +318,30 @@ onUnmounted(() => timer && clearInterval(timer))
         <details class="dataset-mapping">
           <summary>映射已有知识库 ID（可选）</summary>
           <p class="hint">填写 ID 的分类会写入该库；留空的分类按名称前缀自动创建或复用。</p>
-          <label v-for="domain in [...domains, { id: 'process_navigation', name: '资料导航' }]" :key="domain.id">
+          <label v-for="domain in [...domains, { id: 'process_navigation', name: '资料导航', custom: false }]" :key="domain.id">
             {{ domain.name }}<input v-model="dify.dataset_ids[domain.id]" placeholder="留空则自动创建" />
           </label>
         </details>
         <p class="hint">密钥只保存在本机后端的 data 目录，不会写入浏览器构建文件。</p>
         <div class="action-row"><button class="ghost" :disabled="busy" @click="saveDify(false)">保存</button><button class="primary" :disabled="busy" @click="saveDify(true)">保存并测试连接</button></div>
+      </div>
+    </div>
+
+    <div v-if="showCategories" class="modal-wrap">
+      <div class="modal compact">
+        <button class="close" @click="showCategories = false">×</button>
+        <p class="eyebrow">KNOWLEDGE CATEGORIES</p><h2>分类管理</h2>
+        <p class="hint">新增分类会出现在任务、人工归类及 Dify 知识库映射中。预置分类保留；自定义分类可以改名。</p>
+        <div class="category-create">
+          <input v-model="newCategoryName" maxlength="50" placeholder="例如：供应链合规" @keyup.enter="createCategory" />
+          <button class="primary" :disabled="busy || !newCategoryName.trim()" @click="createCategory">新增分类</button>
+        </div>
+        <div class="category-list">
+          <div v-for="category in domains" :key="category.id" class="category-row">
+            <span>{{ category.name }}</span><small>{{ category.custom ? '自定义' : '预置' }}</small>
+            <button v-if="category.custom" class="text-button" @click="renameCategory(category)">改名</button>
+          </div>
+        </div>
       </div>
     </div>
 

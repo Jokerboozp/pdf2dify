@@ -6,7 +6,7 @@ from typing import BinaryIO
 
 from .config import Settings
 from .db import Database
-from .domains import DOMAINS
+from .categories import CategoryStore
 
 
 TERMINAL_STATUSES = {"completed", "failed", "cancelled"}
@@ -16,6 +16,7 @@ class JobService:
     def __init__(self, settings: Settings, db: Database):
         self.settings = settings
         self.db = db
+        self.categories = CategoryStore(settings.data_dir)
 
     def create_path_job(self, *, name: str, source_path: str, mode: str,
                         fixed_domain: str | None) -> dict:
@@ -26,7 +27,7 @@ class JobService:
             raise ValueError("指定文件必须是 PDF")
         if path.is_dir() and not any(p.is_file() and p.suffix.lower() == ".pdf" for p in path.rglob("*")):
             raise ValueError("目录中没有找到 PDF")
-        if fixed_domain and fixed_domain not in DOMAINS:
+        if fixed_domain and fixed_domain not in self.categories.mapping():
             raise ValueError("未知业务分类")
         if path.is_file():
             job = self.db.create_job(
@@ -52,7 +53,7 @@ class JobService:
                           files: list[tuple[str, BinaryIO]]) -> dict:
         if not files:
             raise ValueError("至少上传一个 PDF")
-        if fixed_domain and fixed_domain not in DOMAINS:
+        if fixed_domain and fixed_domain not in self.categories.mapping():
             raise ValueError("未知业务分类")
         normalized_files: list[tuple[Path, BinaryIO]] = []
         for raw_name, stream in files:
