@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
-import { api, type Domain, type Job, type KnowledgeDocument } from './api'
+import { api, type Domain, type Job, type JobEvent, type KnowledgeDocument } from './api'
 
 const jobs = ref<Job[]>([])
 const domains = ref<Domain[]>([])
@@ -22,13 +22,19 @@ const dify = reactive({
   dataset_ids: {} as Record<string, string>,
 })
 let timer: number | undefined
+let stream: EventSource | null = null
+let streamJobId: string | null = null
+let selectionVersion = 0
+let detailVersion = 0
+let stopped = false
 
-const activeCount = computed(() => jobs.value.filter(j => ['queued', 'running'].includes(j.status)).length)
+const isActive = (job: Job) => ['preparing', 'queued', 'running'].includes(job.status)
+const activeCount = computed(() => jobs.value.filter(isActive).length)
 const reviewCount = computed(() => jobs.value.filter(j => j.status === 'needs_review').length)
 const completedCount = computed(() => jobs.value.filter(j => j.status === 'completed').length)
 
 const labels: Record<string, string> = {
-  queued: '排队中', running: '处理中', needs_review: '待分类', paused: '已暂停',
+  preparing: '接收文件', queued: '排队中', running: '处理中', needs_review: '待分类', paused: '已暂停',
   completed: '已完成', failed: '失败', cancelled: '已取消',
 }
 
@@ -38,21 +44,87 @@ function flash(message: string, isError = false) {
   window.setTimeout(() => { notice.value = ''; error.value = '' }, 4000)
 }
 
+function closeStream() {
+  stream?.close()
+  stream = null
+  streamJobId = null
+}
+
+function closeJob() {
+  selectionVersion++
+  closeStream()
+  selected.value = null
+  documents.value = []
+}
+
+function watchJob(job: Job) {
+  if (!isActive(job)) { closeStream(); return }
+  if (stream && streamJobId === job.id) return
+  closeStream()
+  const lastEvent = job.events?.at(-1)?.id || 0
+  const source = new EventSource(`/api/jobs/${job.id}/events?after=${lastEvent}`)
+  stream = source
+  streamJobId = job.id
+  source.addEventListener('log', (event) => {
+    const current = selected.value
+    if (!current || current.id !== job.id) return
+    const entry = JSON.parse((event as MessageEvent).data) as JobEvent
+    if (current.events?.some(item => item.id === entry.id)) return
+    selected.value = { ...current, events: [...(current.events || []), entry].slice(-200) }
+  })
+  source.addEventListener('status', (event) => {
+    const current = selected.value
+    if (!current || current.id !== job.id) return
+    const update = JSON.parse((event as MessageEvent).data) as Job
+    const changed = update.stage !== current.stage || update.status !== current.status
+    selected.value = { ...current, ...update }
+    jobs.value = jobs.value.map(item => item.id === update.id ? update : item)
+    if (changed) void loadSelected(update.id, selectionVersion).catch(e => flash((e as Error).message, true))
+    if (!isActive(update)) closeStream()
+  })
+}
+
+async function loadSelected(jobId: string, version: number) {
+  const requestVersion = ++detailVersion
+  const [job, output] = await Promise.all([api.job(jobId), api.documents(jobId)])
+  if (version !== selectionVersion || requestVersion !== detailVersion) return
+  const liveEvents = selected.value?.id === jobId ? selected.value.events || [] : []
+  const events = [...(job.events || []), ...liveEvents]
+    .filter((item, index, all) => all.findIndex(other => other.id === item.id) === index)
+    .sort((left, right) => left.id - right.id).slice(-200)
+  selected.value = { ...job, events }
+  documents.value = output
+  watchJob(selected.value)
+}
+
+function scheduleRefresh() {
+  if (stopped) return
+  if (timer) window.clearTimeout(timer)
+  timer = window.setTimeout(() => { void refresh() }, jobs.value.some(isActive) ? 5000 : 15000)
+}
+
 async function refresh() {
   try {
     jobs.value = await api.jobs()
-    if (selected.value) {
-      selected.value = await api.job(selected.value.id)
-      documents.value = await api.documents(selected.value.id)
+    const current = selected.value
+    if (stream?.readyState === EventSource.CLOSED) closeStream()
+    if (current && (!stream || stream.readyState !== EventSource.OPEN)) {
+      const latest = jobs.value.find(job => job.id === current.id)
+      if (latest && latest.updated_at !== current.updated_at) {
+        await loadSelected(latest.id, selectionVersion)
+      } else if (isActive(current) && !stream) {
+        watchJob(current)
+      }
     }
-  } catch (e) { flash((e as Error).message, true) }
+  }
+  catch (e) { flash((e as Error).message, true) }
+  finally { scheduleRefresh() }
 }
 
 async function openJob(job: Job) {
-  try {
-    selected.value = await api.job(job.id)
-    documents.value = await api.documents(job.id)
-  }
+  const version = ++selectionVersion
+  closeStream()
+  try { await loadSelected(job.id, version) }
   catch (e) { flash((e as Error).message, true) }
 }
 
@@ -85,6 +157,7 @@ async function jobAction(action: string) {
     flash(action === 'resume' ? '任务已继续' : action === 'pause'
       ? (job.status === 'paused' ? '任务已暂停' : '已请求暂停')
       : (job.status === 'cancelled' ? '任务已取消' : '已请求取消'))
+    await loadSelected(job.id, selectionVersion)
     await refresh()
   } catch (e) { flash((e as Error).message, true) }
 }
@@ -93,7 +166,7 @@ async function setDomain(fileId: string, domain: string) {
   if (!selected.value) return
   try {
     await api.classify(selected.value.id, fileId, domain)
-    selected.value = await api.job(selected.value.id)
+    await loadSelected(selected.value.id, selectionVersion)
   } catch (e) { flash((e as Error).message, true) }
 }
 
@@ -150,11 +223,15 @@ async function renameCategory(category: Domain) {
 }
 
 onMounted(async () => {
-  domains.value = await api.domains()
+  try { domains.value = await api.domains() }
+  catch (e) { flash((e as Error).message, true) }
   await refresh()
-  timer = window.setInterval(refresh, 2500)
 })
-onUnmounted(() => timer && clearInterval(timer))
+onUnmounted(() => {
+  stopped = true
+  if (timer) window.clearTimeout(timer)
+  closeJob()
+})
 </script>
 
 <template>
@@ -213,7 +290,7 @@ onUnmounted(() => timer && clearInterval(timer))
     </main>
 
     <aside v-if="selected" class="drawer">
-      <button class="close" @click="selected = null">×</button>
+      <button class="close" @click="closeJob">×</button>
       <p class="eyebrow">TASK DETAIL</p>
       <h2>{{ selected.name }}</h2>
       <div class="detail-status"><span :class="['status', selected.status]">{{ labels[selected.status] }}</span><b>{{ Math.round(selected.progress) }}%</b></div>
@@ -279,7 +356,7 @@ onUnmounted(() => timer && clearInterval(timer))
         </div>
       </div>
     </aside>
-    <div v-if="selected" class="scrim" @click="selected = null"></div>
+    <div v-if="selected" class="scrim" @click="closeJob"></div>
 
     <div v-if="showCreate" class="modal-wrap">
       <div class="modal">

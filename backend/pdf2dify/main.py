@@ -105,7 +105,7 @@ def get_job(job_id: str):
     try:
         result = db.get_job(job_id)
         result["files"] = db.list_files(job_id)
-        result["events"] = db.list_events(job_id, limit=200)
+        result["events"] = db.list_events(job_id, limit=200, recent=True)
         return result
     except KeyError as exc:
         raise not_found(exc) from exc
@@ -213,17 +213,29 @@ async def stream_events(job_id: str, after: int = 0):
         raise not_found(exc) from exc
 
     async def events():
-        cursor = after
+        cursor = max(0, after)
+        last_status_update = None
+        loop = asyncio.get_running_loop()
+        last_sent = loop.time()
         while True:
             rows = db.list_events(job_id, after=cursor, limit=100)
             for row in rows:
                 cursor = row["id"]
                 yield f"id: {cursor}\nevent: log\ndata: {json.dumps(row, ensure_ascii=False)}\n\n"
+                last_sent = loop.time()
             job = db.get_job(job_id)
-            yield f"event: status\ndata: {json.dumps(job, ensure_ascii=False)}\n\n"
-            if job["status"] in {"completed", "failed", "cancelled"}:
+            if job["updated_at"] != last_status_update:
+                yield f"event: status\ndata: {json.dumps(job, ensure_ascii=False)}\n\n"
+                last_status_update = job["updated_at"]
+                last_sent = loop.time()
+            elif loop.time() - last_sent >= 15:
+                yield ": keepalive\n\n"
+                last_sent = loop.time()
+            if job["status"] in {"completed", "failed", "cancelled"} and len(rows) < 100:
                 break
-            await asyncio.sleep(1)
+            if len(rows) == 100:
+                continue
+            await asyncio.sleep(2)
 
     return StreamingResponse(events(), media_type="text/event-stream")
 

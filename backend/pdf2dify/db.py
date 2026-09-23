@@ -244,12 +244,19 @@ class Database:
             )
             return int(cursor.lastrowid)
 
-    def list_events(self, job_id: str, after: int = 0, limit: int = 500) -> list[dict[str, Any]]:
+    def list_events(self, job_id: str, after: int = 0, limit: int = 500,
+                    recent: bool = False) -> list[dict[str, Any]]:
         with self.connect() as conn:
-            rows = conn.execute(
-                "SELECT * FROM events WHERE job_id=? AND id>? ORDER BY id LIMIT ?",
-                (job_id, after, limit),
-            ).fetchall()
+            if recent:
+                rows = conn.execute(
+                    "SELECT * FROM events WHERE job_id=? ORDER BY id DESC LIMIT ?",
+                    (job_id, limit),
+                ).fetchall()[::-1]
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM events WHERE job_id=? AND id>? ORDER BY id LIMIT ?",
+                    (job_id, after, limit),
+                ).fetchall()
         result = []
         for row in rows:
             item = dict(row)

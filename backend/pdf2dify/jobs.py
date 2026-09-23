@@ -110,7 +110,7 @@ class JobService:
         self.db.add_event(job_id, "info", "任务已重新进入队列")
         return self.db.update_job(
             job_id, status="queued", pause_requested=0, cancel_requested=0,
-            error=None, finished_at=None,
+            error=None, finished_at=None, message="等待处理",
         )
 
     def cancel(self, job_id: str) -> dict:

@@ -83,7 +83,9 @@ def test_queued_job_can_be_paused_and_resumed(tmp_path: Path):
     paused = service.request_pause(job["id"])
     assert paused["status"] == "paused"
     assert db.claim_next_job() is None
-    assert service.resume(job["id"])["status"] == "queued"
+    resumed = service.resume(job["id"])
+    assert resumed["status"] == "queued"
+    assert resumed["message"] == "等待处理"
     assert db.claim_next_job()["id"] == job["id"]
 
 

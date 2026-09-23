@@ -400,7 +400,7 @@ class PipelineRunner:
                 break
             if time.monotonic() >= deadline:
                 raise TimeoutError("等待 Dify 索引超过 12 小时，可稍后继续任务")
-            time.sleep(30)
+            self._wait_for_index_poll(job_id, 30)
         self.db.update_job(job_id, stage="auditing", progress=99, message="核查 Dify 远端内容")
         self._run_engine(job_id, "dify-audit", config_path)
         self._run_engine(job_id, "nav-audit", config_path)
@@ -490,6 +490,15 @@ class PipelineRunner:
             raise JobCancelled
         if current["pause_requested"]:
             raise JobPaused
+
+    def _wait_for_index_poll(self, job_id: str, seconds: float) -> None:
+        deadline = time.monotonic() + seconds
+        while True:
+            self._guard(job_id)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return
+            time.sleep(min(0.5, remaining))
 
     @staticmethod
     def _marker(workspace: Path, stage: str) -> Path:

@@ -1,4 +1,4 @@
-export type JobStatus = 'queued' | 'running' | 'needs_review' | 'paused' | 'completed' | 'failed' | 'cancelled'
+export type JobStatus = 'preparing' | 'queued' | 'running' | 'needs_review' | 'paused' | 'completed' | 'failed' | 'cancelled'
 
 export interface JobFile {
   id: string
