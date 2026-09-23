@@ -198,7 +198,13 @@ def setup_datasets(cfg: dict, navigation: bool = False) -> dict:
         root = root / "process-navigation"
         categories = {"process_navigation": "资料导航"}
     else:
-        categories = cfg.get("categories", DOMAINS)
+        configured = cfg.get("categories", DOMAINS)
+        manifest = read_json(root / "full-export/manifest.json")
+        used = {item["domain"] for item in manifest["documents"]}
+        unknown = used - configured.keys()
+        if unknown:
+            raise ValueError(f"导出清单含未知分类：{', '.join(sorted(unknown))}")
+        categories = {domain: label for domain, label in configured.items() if domain in used}
     state_path = root / "dify/full-state.json"
     state = read_json(state_path) if state_path.exists() else {"datasets": {}, "documents": {}}
     if state.get("base_url", base) != base:
@@ -241,7 +247,9 @@ def setup_datasets(cfg: dict, navigation: bool = False) -> dict:
                     available.append(dataset)
                     by_id[dataset["id"]] = dataset
         old_id = state.get("datasets", {}).get(domain, {}).get("id")
-        if old_id and old_id != dataset["id"] and state.get("documents"):
+        if old_id and old_id != dataset["id"] and any(
+            item.get("dataset_id") == old_id for item in state.get("documents", {}).values()
+        ):
             raise ValueError(f"{domain} 已有同步回执，不能直接切换目标知识库")
         state.setdefault("datasets", {})[domain] = {"id": dataset["id"], "name": dataset["name"]}
         write_json(state_path, state)
