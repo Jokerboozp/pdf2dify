@@ -9,6 +9,8 @@ const documents = ref<KnowledgeDocument[]>([])
 const showCreate = ref(false)
 const showSettings = ref(false)
 const showCategories = ref(false)
+const pendingDelete = ref<Job | null>(null)
+const deleting = ref(false)
 const newCategoryName = ref('')
 const busy = ref(false)
 const notice = ref('')
@@ -29,6 +31,7 @@ let detailVersion = 0
 let stopped = false
 
 const isActive = (job: Job) => ['preparing', 'queued', 'running'].includes(job.status)
+const canDelete = (job: Job) => !['preparing', 'running'].includes(job.status)
 const activeCount = computed(() => jobs.value.filter(isActive).length)
 const reviewCount = computed(() => jobs.value.filter(j => j.status === 'needs_review').length)
 const completedCount = computed(() => jobs.value.filter(j => j.status === 'completed').length)
@@ -162,6 +165,23 @@ async function jobAction(action: string) {
   } catch (e) { flash((e as Error).message, true) }
 }
 
+async function deleteJob() {
+  const job = pendingDelete.value
+  if (!job || deleting.value) return
+  deleting.value = true
+  try {
+    const result = await api.deleteJob(job.id)
+    if (selected.value?.id === job.id) closeJob()
+    pendingDelete.value = null
+    jobs.value = jobs.value.filter(item => item.id !== job.id)
+    flash(result.cleanup_failed?.length
+      ? '任务记录已删除，但部分本地文件未能清理，请检查 data 目录'
+      : '任务已删除')
+    await refresh()
+  } catch (e) { flash((e as Error).message, true) }
+  finally { deleting.value = false }
+}
+
 async function setDomain(fileId: string, domain: string) {
   if (!selected.value) return
   try {
@@ -238,33 +258,29 @@ onUnmounted(() => {
   <div class="shell">
     <header class="topbar">
       <div class="brand">
-        <div class="mark">P2D</div>
-        <div><strong>pdf2dify</strong><span>PDF 知识库生产台</span></div>
+        <div class="mark">P</div>
+        <div><strong>pdf2dify</strong><span>文档处理工作台</span></div>
       </div>
       <div class="top-actions">
         <button class="ghost" @click="showCategories = true">分类管理</button>
         <button class="ghost" @click="openDifySettings">Dify 连接</button>
-        <button class="primary" @click="showCreate = true">＋ 新建处理任务</button>
+        <button class="primary" @click="showCreate = true">＋ 新建任务</button>
       </div>
     </header>
 
     <main>
-      <section class="hero">
-        <div>
-          <p class="eyebrow">LOCAL-FIRST · TRACEABLE · RESUMABLE</p>
-          <h1>从 PDF 到可检索知识，<br><em>一条流水线完成。</em></h1>
-          <p class="subtitle">上传文件或指定目录，自动完成解析、OCR、业务分类、图文章节构建和 Dify 入库。</p>
-        </div>
-        <div class="summary-grid">
-          <div class="metric"><b>{{ activeCount }}</b><span>运行中</span></div>
-          <div class="metric amber"><b>{{ reviewCount }}</b><span>待分类</span></div>
-          <div class="metric green"><b>{{ completedCount }}</b><span>已完成</span></div>
+      <section class="page-intro">
+        <div><h1>处理任务</h1><p>查看 PDF 处理进度与生成结果</p></div>
+        <div class="summary-grid" aria-label="任务概览">
+          <div class="metric"><b>{{ activeCount }}</b><span>进行中</span></div>
+          <div class="metric"><b>{{ reviewCount }}</b><span>待分类</span></div>
+          <div class="metric"><b>{{ completedCount }}</b><span>已完成</span></div>
         </div>
       </section>
 
       <section class="workspace">
         <div class="section-heading">
-          <div><p class="eyebrow">PIPELINE RUNS</p><h2>处理任务</h2></div>
+          <div><h2>全部任务</h2><p>共 {{ jobs.length }} 个任务</p></div>
           <button class="text-button" @click="refresh">刷新</button>
         </div>
 
@@ -276,22 +292,25 @@ onUnmounted(() => {
         </div>
 
         <div v-else class="job-list">
-          <button v-for="job in jobs" :key="job.id" class="job-row" @click="openJob(job)">
-            <div class="file-badge">PDF</div>
-            <div class="job-main">
-              <div class="job-title"><strong>{{ job.name }}</strong><span :class="['status', job.status]">{{ labels[job.status] }}</span></div>
-              <p>{{ job.message || job.stage }} · {{ job.total_files || '—' }} 个文件 · {{ job.total_pages || '—' }} 页</p>
-              <div class="progress"><i :style="{ width: `${job.progress}%` }"></i></div>
-            </div>
-            <div class="job-meta"><b>{{ Math.round(job.progress) }}%</b><span>{{ formatTime(job.updated_at) }}</span></div>
-          </button>
+          <div v-for="job in jobs" :key="job.id" class="job-row">
+            <button class="job-open" :aria-label="`查看任务：${job.name}`" @click="openJob(job)">
+              <div class="file-badge">PDF</div>
+              <div class="job-main">
+                <div class="job-title"><strong>{{ job.name }}</strong><span :class="['status', job.status]">{{ labels[job.status] }}</span></div>
+                <p>{{ job.message || job.stage }} · {{ job.total_files || '—' }} 个文件 · {{ job.total_pages || '—' }} 页</p>
+                <div class="progress"><i :style="{ width: `${job.progress}%` }"></i></div>
+              </div>
+              <div class="job-meta"><b>{{ Math.round(job.progress) }}%</b><span>{{ formatTime(job.updated_at) }}</span></div>
+            </button>
+            <button v-if="canDelete(job)" class="row-delete" :aria-label="`删除任务：${job.name}`" title="删除任务" @click="pendingDelete = job">删除</button>
+          </div>
         </div>
       </section>
     </main>
 
     <aside v-if="selected" class="drawer">
       <button class="close" @click="closeJob">×</button>
-      <p class="eyebrow">TASK DETAIL</p>
+      <p class="eyebrow">任务详情</p>
       <h2>{{ selected.name }}</h2>
       <div class="detail-status"><span :class="['status', selected.status]">{{ labels[selected.status] }}</span><b>{{ Math.round(selected.progress) }}%</b></div>
       <div class="progress large"><i :style="{ width: `${selected.progress}%` }"></i></div>
@@ -322,6 +341,7 @@ onUnmounted(() => {
         <button v-if="selected.status === 'running' || selected.status === 'queued'" class="ghost" @click="jobAction('pause')">暂停</button>
         <button v-if="selected.status === 'paused' || selected.status === 'failed'" class="primary" @click="jobAction('resume')">继续 / 重试</button>
         <button v-if="!['completed','failed','cancelled'].includes(selected.status)" class="danger" @click="jobAction('cancel')">取消</button>
+        <button v-if="canDelete(selected)" class="delete-action" @click="pendingDelete = selected">删除任务</button>
       </div>
 
       <div v-if="selected.status === 'completed'" class="artifacts">
@@ -361,7 +381,7 @@ onUnmounted(() => {
     <div v-if="showCreate" class="modal-wrap">
       <div class="modal">
         <button class="close" @click="showCreate = false">×</button>
-        <p class="eyebrow">NEW PIPELINE RUN</p><h2>新建处理任务</h2>
+        <p class="eyebrow">创建任务</p><h2>新建处理任务</h2>
         <label>任务名称<input v-model="form.name" placeholder="例如：9 月新增财务手册" /></label>
         <div class="tabs"><button :class="{active: inputMode === 'path'}" @click="inputMode = 'path'">指定服务器路径</button><button :class="{active: inputMode === 'upload'}" @click="inputMode = 'upload'">上传 PDF</button></div>
         <label v-if="inputMode === 'path'">PDF 文件或目录<input v-model="form.source_path" placeholder="例如：/home/user/pdfs 或 C:\资料\手册.pdf" /></label>
@@ -388,7 +408,7 @@ onUnmounted(() => {
     <div v-if="showSettings" class="modal-wrap">
       <div class="modal compact">
         <button class="close" @click="showSettings = false">×</button>
-        <p class="eyebrow">DIFY SERVICE API</p><h2>Dify 连接</h2>
+        <p class="eyebrow">连接设置</p><h2>Dify 连接</h2>
         <label>API Base URL<input v-model="dify.dify_base_url" placeholder="http://192.168.24.133:8811/v1" /></label>
         <label>知识库 API Key<input v-model="dify.dify_api_key" type="password" :placeholder="dify.dify_api_key_configured ? '已配置；留空保持不变' : 'dataset-...'" /></label>
         <label>Embedding Provider<input v-model="dify.embedding_provider" /></label>
@@ -409,7 +429,7 @@ onUnmounted(() => {
     <div v-if="showCategories" class="modal-wrap">
       <div class="modal compact">
         <button class="close" @click="showCategories = false">×</button>
-        <p class="eyebrow">KNOWLEDGE CATEGORIES</p><h2>分类管理</h2>
+        <p class="eyebrow">分类设置</p><h2>分类管理</h2>
         <p class="hint">新增分类会出现在任务、人工归类及 Dify 知识库映射中。预置分类保留；自定义分类可以改名。</p>
         <div class="category-create">
           <input v-model="newCategoryName" maxlength="50" placeholder="例如：供应链合规" @keyup.enter="createCategory" />
@@ -420,6 +440,17 @@ onUnmounted(() => {
             <span>{{ category.name }}</span><small>{{ category.custom ? '自定义' : '预置' }}</small>
             <button v-if="category.custom" class="text-button" @click="renameCategory(category)">改名</button>
           </div>
+        </div>
+      </div>
+    </div>
+
+    <div v-if="pendingDelete" class="modal-wrap confirm-wrap">
+      <div class="modal confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="delete-title">
+        <h2 id="delete-title">删除任务？</h2>
+        <p>“{{ pendingDelete.name }}”的任务记录、上传副本和生成文件将被删除。原始来源文件会保留。<template v-if="pendingDelete.mode === 'sync'">已同步到 Dify 的内容不会删除。</template></p>
+        <div class="confirm-actions">
+          <button class="ghost" :disabled="deleting" @click="pendingDelete = null">保留任务</button>
+          <button class="danger-solid" :disabled="deleting" @click="deleteJob">{{ deleting ? '正在删除…' : '确认删除' }}</button>
         </div>
       </div>
     </div>

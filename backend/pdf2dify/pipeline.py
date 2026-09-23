@@ -99,25 +99,27 @@ class PipelineRunner:
 
             if job["mode"] == "sync":
                 self._sync_dify(job_id, config_path, workspace)
-            self.db.update_job(
-                job_id, status="completed", stage="completed", progress=100,
-                message="处理完成", finished_at=utcnow(), processed_files=len(self.db.list_files(job_id)),
-                processed_pages=self.db.get_job(job_id)["total_pages"],
-            )
+            total_files = len(self.db.list_files(job_id))
+            total_pages = self.db.get_job(job_id)["total_pages"]
             self.db.set_all_file_status(job_id, "completed")
             self.db.add_event(job_id, "info", "任务已完成")
+            self.db.update_job(
+                job_id, status="completed", stage="completed", progress=100,
+                message="处理完成", finished_at=utcnow(), processed_files=total_files,
+                processed_pages=total_pages,
+            )
         except NeedsReview:
             self.db.update_job(job_id, status="needs_review", stage="classification", message="等待人工分类")
         except JobPaused:
-            self.db.update_job(job_id, status="paused", message="任务已暂停")
             self.db.add_event(job_id, "info", "任务已暂停")
+            self.db.update_job(job_id, status="paused", message="任务已暂停")
         except JobCancelled:
-            self.db.update_job(job_id, status="cancelled", message="任务已取消", finished_at=utcnow())
             self.db.add_event(job_id, "warning", "任务已取消")
+            self.db.update_job(job_id, status="cancelled", message="任务已取消", finished_at=utcnow())
         except Exception as exc:
             message = f"{type(exc).__name__}: {exc}"
-            self.db.update_job(job_id, status="failed", message="处理失败", error=message, finished_at=utcnow())
             self.db.add_event(job_id, "error", message)
+            self.db.update_job(job_id, status="failed", message="处理失败", error=message, finished_at=utcnow())
 
     def _write_engine_config(self, path: Path, source_root: Path, data_dir: Path) -> None:
         config = {

@@ -111,6 +111,16 @@ def get_job(job_id: str):
         raise not_found(exc) from exc
 
 
+@app.delete("/api/jobs/{job_id}")
+def delete_job(job_id: str):
+    try:
+        return service.delete(job_id)
+    except KeyError as exc:
+        raise not_found(exc) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
 @app.post("/api/jobs/{job_id}/pause")
 def pause_job(job_id: str):
     try:

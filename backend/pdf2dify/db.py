@@ -116,6 +116,20 @@ class Database:
             raise KeyError(job_id)
         return dict(row)
 
+    def delete_inactive_job(self, job_id: str) -> dict[str, Any]:
+        """Delete a job and its related rows without racing a worker claim."""
+        allowed = {"queued", "paused", "needs_review", "completed", "failed", "cancelled"}
+        with self.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
+            if row is None:
+                raise KeyError(job_id)
+            if row["status"] not in allowed:
+                raise ValueError("任务正在处理，请先取消并等待任务停止")
+            conn.execute("DELETE FROM jobs WHERE id=?", (job_id,))
+            conn.execute("COMMIT")
+            return dict(row)
+
     def list_jobs(self, limit: int = 100) -> list[dict[str, Any]]:
         with self.connect() as conn:
             rows = conn.execute(
@@ -170,6 +184,44 @@ class Database:
             conn.execute(
                 f"UPDATE jobs SET {assignments}, updated_at=? WHERE id=?",
                 [*values, stamp, job_id],
+            )
+            result = dict(conn.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone())
+            message = (
+                ("任务已暂停" if status in {"queued", "needs_review"} else "已请求暂停，当前阶段结束后生效")
+                if action == "pause" else
+                ("任务已取消" if result["status"] == "cancelled" else "已请求取消")
+            )
+            conn.execute(
+                "INSERT INTO events(job_id,level,message,created_at) VALUES(?,?,?,?)",
+                (job_id, "info" if action == "pause" else "warning", message, stamp),
+            )
+            conn.execute("COMMIT")
+            return result
+
+    def resume_job(self, job_id: str) -> dict[str, Any]:
+        """Resume and log atomically so deletion cannot interleave."""
+        stamp = utcnow()
+        with self.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
+            if row is None:
+                raise KeyError(job_id)
+            if row["status"] not in {"paused", "needs_review", "failed"}:
+                raise ValueError("当前状态不能继续")
+            if row["status"] == "needs_review":
+                unresolved = conn.execute(
+                    "SELECT COUNT(*) FROM job_files WHERE job_id=? AND domain IS NULL", (job_id,)
+                ).fetchone()[0]
+                if unresolved:
+                    raise ValueError(f"仍有 {unresolved} 个文件未分类")
+            conn.execute(
+                "INSERT INTO events(job_id,level,message,created_at) VALUES(?,?,?,?)",
+                (job_id, "info", "任务已重新进入队列", stamp),
+            )
+            conn.execute(
+                """UPDATE jobs SET status='queued', pause_requested=0, cancel_requested=0,
+                error=NULL, finished_at=NULL, message='等待处理', updated_at=? WHERE id=?""",
+                (stamp, job_id),
             )
             result = dict(conn.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone())
             conn.execute("COMMIT")

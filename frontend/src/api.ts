@@ -61,6 +61,7 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
 export const api = {
   jobs: () => request<Job[]>('/api/jobs'),
   job: (id: string) => request<Job>(`/api/jobs/${id}`),
+  deleteJob: (id: string) => request<{deleted: string; cleanup_failed?: string[]}>(`/api/jobs/${id}`, { method: 'DELETE' }),
   documents: (id: string) => request<KnowledgeDocument[]>(`/api/jobs/${id}/documents`),
   domains: () => request<Domain[]>('/api/domains'),
   createDomain: (name: string) => request<Domain>('/api/domains', {

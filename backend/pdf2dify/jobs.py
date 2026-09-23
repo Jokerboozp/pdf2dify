@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import shutil
 from pathlib import Path
 from typing import BinaryIO
@@ -93,32 +94,35 @@ class JobService:
         current = self.db.get_job(job_id)
         if current["status"] in TERMINAL_STATUSES:
             return current
-        job = self.db.request_control(job_id, "pause")
-        if job["status"] not in TERMINAL_STATUSES:
-            message = "任务已暂停" if job["status"] == "paused" else "已请求暂停，当前阶段结束后生效"
-            self.db.add_event(job_id, "info", message)
-        return job
+        return self.db.request_control(job_id, "pause")
 
     def resume(self, job_id: str) -> dict:
-        job = self.db.get_job(job_id)
-        if job["status"] not in {"paused", "needs_review", "failed"}:
-            raise ValueError("当前状态不能继续")
-        if job["status"] == "needs_review":
-            unresolved = [item for item in self.db.list_files(job_id) if not item.get("domain")]
-            if unresolved:
-                raise ValueError(f"仍有 {len(unresolved)} 个文件未分类")
-        self.db.add_event(job_id, "info", "任务已重新进入队列")
-        return self.db.update_job(
-            job_id, status="queued", pause_requested=0, cancel_requested=0,
-            error=None, finished_at=None, message="等待处理",
-        )
+        return self.db.resume_job(job_id)
 
     def cancel(self, job_id: str) -> dict:
         current = self.db.get_job(job_id)
         if current["status"] in TERMINAL_STATUSES:
             return current
-        job = self.db.request_control(job_id, "cancel")
-        if job["status"] != "completed" and job["status"] != "failed":
-            message = "任务已取消" if job["status"] == "cancelled" else "已请求取消"
-            self.db.add_event(job_id, "warning", message)
-        return job
+        return self.db.request_control(job_id, "cancel")
+
+    def delete(self, job_id: str) -> dict:
+        if not re.fullmatch(r"[0-9a-f]{32}", job_id):
+            raise KeyError(job_id)
+        self.db.delete_inactive_job(job_id)
+        data_root = self.settings.data_dir.resolve()
+        cleanup_failed = []
+        for name in ("uploads", "jobs"):
+            parent = (data_root / name).resolve()
+            target = parent / job_id
+            if not parent.is_relative_to(data_root) or not target.resolve().is_relative_to(parent):
+                cleanup_failed.append(name)
+                continue
+            try:
+                if target.exists():
+                    shutil.rmtree(target)
+            except OSError:
+                cleanup_failed.append(name)
+        result = {"deleted": job_id}
+        if cleanup_failed:
+            result["cleanup_failed"] = cleanup_failed
+        return result
