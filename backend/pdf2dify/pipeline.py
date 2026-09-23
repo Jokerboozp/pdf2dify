@@ -7,6 +7,7 @@ import subprocess
 import time
 import zipfile
 import html
+import hashlib
 from pathlib import Path
 
 from openpyxl import Workbook
@@ -142,6 +143,8 @@ class PipelineRunner:
         ] + (extra or [])
         env = os.environ.copy()
         env.update(self.secrets.read())
+        if env.get("DIFY_BASE_URL"):
+            env["DIFY_BASE_URL"] = env["DIFY_BASE_URL"].rstrip("/")
         process = subprocess.Popen(
             command, cwd=self.settings.engine_root, stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace", env=env,
@@ -315,6 +318,8 @@ class PipelineRunner:
         secrets = self.secrets.read()
         if not secrets.get("DIFY_BASE_URL") or not secrets.get("DIFY_DATASET_API_KEY"):
             raise ValueError("尚未配置 Dify 地址或知识库 API Key")
+        state_dir = self._sync_state_dir(secrets["DIFY_BASE_URL"])
+        self._load_sync_receipts(workspace, state_dir)
         for stage, title, progress in (
             ("dify-setup", "创建或映射 Dify 知识库", 92),
             ("dify-upload", "上传并更新 Dify 文档", 95),
@@ -325,6 +330,7 @@ class PipelineRunner:
             self.db.update_job(job_id, stage=stage, progress=progress, message=title)
             self.db.add_event(job_id, "info", f"开始：{title}")
             self._run_engine(job_id, stage, config_path)
+            self._save_sync_receipts(workspace, state_dir)
         deadline = time.monotonic() + 12 * 60 * 60
         while True:
             self._guard(job_id)
@@ -335,14 +341,114 @@ class PipelineRunner:
             state = json.loads(report.read_text(encoding="utf-8")) if report.exists() else {}
             domains = state.get("domains", {})
             pending = sum(len(value.get("target", {}).get("pending", [])) for value in domains.values())
+            anchor_missing = sum(
+                max(0, value.get("target", {}).get("counts", {}).get("anchor_required", 0)
+                    - value.get("target", {}).get("counts", {}).get("anchors_current", 0))
+                for value in domains.values()
+            )
+            errors = [
+                entry for value in domains.values()
+                for entry in value.get("target", {}).get("pending", [])
+                if entry.get("status") == "error"
+            ]
             nav_report = workspace / "engine-data" / "reports" / "process-navigation-status.json"
             nav_state = json.loads(nav_report.read_text(encoding="utf-8")) if nav_report.exists() else {}
             nav_pending = len(nav_state.get("pending", []))
-            if domains and pending == 0 and nav_state and nav_pending == 0:
+            errors.extend(entry for entry in nav_state.get("pending", []) if entry.get("status") == "error")
+            if errors:
+                raise RuntimeError(f"Dify 索引有 {len(errors)} 个错误，请查看远端索引报告")
+            if domains and pending == 0 and anchor_missing and nav_state and nav_pending == 0:
+                self.db.update_job(job_id, stage="dify-anchor", message="补充原文检索标题")
+                self._run_engine(job_id, "dify-anchor", config_path)
+                self._save_sync_receipts(workspace, state_dir)
+                continue
+            if domains and pending == 0 and anchor_missing == 0 and nav_state and nav_pending == 0:
                 break
             if time.monotonic() >= deadline:
                 raise TimeoutError("等待 Dify 索引超过 12 小时，可稍后继续任务")
             time.sleep(30)
+        self.db.update_job(job_id, stage="auditing", progress=99, message="核查 Dify 远端内容")
+        self._run_engine(job_id, "dify-audit", config_path)
+        self._run_engine(job_id, "nav-audit", config_path)
+        retire_plan, source_index = self._replacement_plan(job_id, workspace, state_dir)
+        if retire_plan["documents"] or retire_plan["navigation"]:
+            plan_path = workspace / "retire-plan.json"
+            plan_path.write_text(json.dumps(retire_plan, ensure_ascii=False, indent=2), encoding="utf-8")
+            self.db.update_job(job_id, stage="retiring", message="停用已替换的旧版本")
+            self._run_engine(job_id, "dify-retire", config_path, ["--retire-plan", str(plan_path)])
+        self._save_sync_receipts(workspace, state_dir)
+        index_path = state_dir / "source-index.json"
+        temp = index_path.with_suffix(".tmp")
+        temp.write_text(json.dumps(source_index, ensure_ascii=False, indent=2), encoding="utf-8")
+        os.replace(temp, index_path)
+
+    def _replacement_plan(self, job_id: str, workspace: Path, state_dir: Path) -> tuple[dict, dict]:
+        job = self.db.get_job(job_id)
+        index_path = state_dir / "source-index.json"
+        index = json.loads(index_path.read_text(encoding="utf-8")) if index_path.is_file() else {}
+        root = workspace / "engine-data"
+        manifest = json.loads((root / "full-export/manifest.json").read_text(encoding="utf-8"))
+        nav_manifest = json.loads((root / "process-navigation/full-export/manifest.json").read_text(encoding="utf-8"))
+        plan = {"documents": [], "navigation": []}
+        for file in self.db.list_files(job_id):
+            identity = self._source_identity(job, file)
+            current_keys = sorted(
+                item["key"] for item in manifest["documents"]
+                if item["source_id"] == file["source_id"]
+            )
+            current_nav = sorted(
+                item["key"] for item in nav_manifest["documents"]
+                if item["source_id"] == file["source_id"]
+            )
+            previous = index.get(identity, {})
+            plan["documents"].extend(sorted(set(previous.get("documents", [])) - set(current_keys)))
+            plan["navigation"].extend(sorted(set(previous.get("navigation", [])) - set(current_nav)))
+            index[identity] = {
+                "source_id": file["source_id"], "documents": current_keys,
+                "navigation": current_nav, "updated_at": utcnow(),
+            }
+        return {key: sorted(set(value)) for key, value in plan.items()}, index
+
+    @staticmethod
+    def _source_identity(job: dict, file: dict) -> str:
+        if job["source_type"] == "path_file":
+            return Path(job["source_path"]).resolve().as_posix().lower()
+        if job["source_type"] == "path_directory":
+            return (Path(job["source_path"]) / file["relative_path"]).resolve().as_posix().lower()
+        return "upload:" + job["name"] + ":" + file["relative_path"].replace("\\", "/").lower()
+
+    def _sync_state_dir(self, base_url: str) -> Path:
+        identity = hashlib.sha256(base_url.rstrip("/").encode("utf-8")).hexdigest()[:16]
+        path = self.settings.data_dir / "dify-state" / identity
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    @staticmethod
+    def _sync_receipt_paths(workspace: Path) -> tuple[tuple[str, str], ...]:
+        return (
+            ("full-state.json", "dify/full-state.json"),
+            ("search-anchors.json", "dify/search-anchors.json"),
+            ("navigation-state.json", "process-navigation/dify/full-state.json"),
+        )
+
+    def _load_sync_receipts(self, workspace: Path, state_dir: Path) -> None:
+        root = workspace / "engine-data"
+        for shared_name, relative in self._sync_receipt_paths(workspace):
+            source = state_dir / shared_name
+            target = root / relative
+            if source.is_file() and not target.exists():
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(source, target)
+
+    def _save_sync_receipts(self, workspace: Path, state_dir: Path) -> None:
+        root = workspace / "engine-data"
+        for shared_name, relative in self._sync_receipt_paths(workspace):
+            source = root / relative
+            if source.is_file():
+                target = state_dir / shared_name
+                temp = target.with_suffix(".tmp")
+                shutil.copy2(source, temp)
+                os.replace(temp, target)
 
     def _guard(self, job_id: str) -> None:
         current = self.db.get_job(job_id)

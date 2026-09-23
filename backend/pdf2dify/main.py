@@ -242,6 +242,8 @@ def update_dify_settings(payload: DifySettingsUpdate):
         "DIFY_DATASET_API_KEY": payload.dify_api_key,
         "DIFY_EMBEDDING_PROVIDER": payload.embedding_provider,
         "DIFY_EMBEDDING_MODEL": payload.embedding_model,
+        "PDF2DIFY_DATASET_PREFIX": payload.dataset_prefix,
+        "PDF2DIFY_DATASET_IDS": json.dumps(payload.dataset_ids, ensure_ascii=False) if payload.dataset_ids is not None else None,
     }
     secrets.update(values)
     return secrets.public()

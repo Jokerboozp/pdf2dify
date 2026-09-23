@@ -62,7 +62,7 @@ class SecretStore:
         current = self.read()
         for key, value in values.items():
             if value is not None and value != "":
-                current[key] = value
+                current[key] = value.rstrip("/") if key == "DIFY_BASE_URL" else value
         self.path.parent.mkdir(parents=True, exist_ok=True)
         temp = self.path.with_suffix(".tmp")
         temp.write_text(json.dumps(current, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -70,9 +70,17 @@ class SecretStore:
 
     def public(self) -> dict[str, object]:
         values = self.read()
+        try:
+            dataset_ids = json.loads(values.get("PDF2DIFY_DATASET_IDS", "{}"))
+            if not isinstance(dataset_ids, dict):
+                dataset_ids = {}
+        except json.JSONDecodeError:
+            dataset_ids = {}
         return {
             "dify_base_url": values.get("DIFY_BASE_URL", ""),
             "dify_api_key_configured": bool(values.get("DIFY_DATASET_API_KEY")),
             "embedding_provider": values.get("DIFY_EMBEDDING_PROVIDER", "langgenius/ollama/ollama"),
             "embedding_model": values.get("DIFY_EMBEDDING_MODEL", "nomic-embed-text:latest"),
+            "dataset_prefix": values.get("PDF2DIFY_DATASET_PREFIX", "pdf2dify-"),
+            "dataset_ids": dataset_ids,
         }

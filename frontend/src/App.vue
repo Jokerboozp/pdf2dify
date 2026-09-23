@@ -14,7 +14,11 @@ const error = ref('')
 const inputMode = ref<'path' | 'upload'>('path')
 const uploads = ref<File[]>([])
 const form = reactive({ name: '', source_path: '', mode: 'export', fixed_domain: '' })
-const dify = reactive({ dify_base_url: '', dify_api_key: '', dify_api_key_configured: false, embedding_provider: '', embedding_model: '' })
+const dify = reactive({
+  dify_base_url: '', dify_api_key: '', dify_api_key_configured: false,
+  embedding_provider: '', embedding_model: '', dataset_prefix: 'pdf2dify-',
+  dataset_ids: {} as Record<string, string>,
+})
 let timer: number | undefined
 
 const activeCount = computed(() => jobs.value.filter(j => ['queued', 'running'].includes(j.status)).length)
@@ -285,6 +289,14 @@ onUnmounted(() => timer && clearInterval(timer))
         <label>知识库 API Key<input v-model="dify.dify_api_key" type="password" :placeholder="dify.dify_api_key_configured ? '已配置；留空保持不变' : 'dataset-...'" /></label>
         <label>Embedding Provider<input v-model="dify.embedding_provider" /></label>
         <label>Embedding Model<input v-model="dify.embedding_model" /></label>
+        <label>新建知识库名称前缀<input v-model="dify.dataset_prefix" placeholder="pdf2dify-" /></label>
+        <details class="dataset-mapping">
+          <summary>映射已有知识库 ID（可选）</summary>
+          <p class="hint">填写 ID 的分类会写入该库；留空的分类按名称前缀自动创建或复用。</p>
+          <label v-for="domain in [...domains, { id: 'process_navigation', name: '资料导航' }]" :key="domain.id">
+            {{ domain.name }}<input v-model="dify.dataset_ids[domain.id]" placeholder="留空则自动创建" />
+          </label>
+        </details>
         <p class="hint">密钥只保存在本机后端的 data 目录，不会写入浏览器构建文件。</p>
         <div class="action-row"><button class="ghost" :disabled="busy" @click="saveDify(false)">保存</button><button class="primary" :disabled="busy" @click="saveDify(true)">保存并测试连接</button></div>
       </div>

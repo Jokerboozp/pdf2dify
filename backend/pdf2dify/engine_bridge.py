@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
+import os
 import sys
 import zipfile
 from collections import Counter
@@ -70,16 +72,191 @@ def verify(cfg: dict) -> dict:
     return report
 
 
+def audit_remote(cfg: dict) -> dict:
+    """Verify only the documents managed by this job, not other jobs' receipts."""
+    from ops_rag.common import now, read_json, write_json
+    from ops_rag.full_sync import connect
+    from ops_rag.search_anchors import anchor_text
+
+    root = Path(cfg["data_dir"])
+    manifest = read_json(root / "full-export/manifest.json")
+    state = read_json(root / "dify/full-state.json")
+    anchor_path = root / "dify/search-anchors.json"
+    anchors = read_json(anchor_path).get("documents", {}) if anchor_path.exists() else {}
+    client = connect(cfg)
+    remote = {
+        document["id"]: document
+        for dataset in state["datasets"].values()
+        for document in client.documents(dataset["id"])
+    }
+    checked, images, errors = 0, 0, []
+    for item in manifest["documents"]:
+        key = item["key"]
+        receipt = state["documents"].get(key, {})
+        document = remote.get(receipt.get("document_id"), {})
+        problems = []
+        if receipt.get("hash") != item["content_hash"] or document.get("indexing_status") != "completed" or not document.get("enabled"):
+            problems.append("current_content_not_ready")
+        if not receipt.get("document_id") or not receipt.get("dataset_id"):
+            errors.append({"key": key, "errors": problems + ["missing_receipt"]})
+            continue
+        base = f"datasets/{receipt['dataset_id']}/documents/{receipt['document_id']}"
+        detail = client.call("GET", base, params={"metadata": "only"})
+        metadata = detail.get("doc_metadata") or []
+        values = metadata if isinstance(metadata, dict) else {entry["name"]: entry.get("value") for entry in metadata}
+        for name, value in item["metadata"].items():
+            if values.get(name) != value:
+                problems.append("metadata_mismatch:" + name)
+        parents = client.call("GET", base + "/segments", params={"limit": 100}).get("data", [])
+        if len(parents) != 1:
+            errors.append({"key": key, "errors": problems + ["expected_one_parent"]})
+            continue
+        parent = parents[0]
+        content = parent.get("content", "")
+        if item["source_name"] not in content:
+            problems.append("missing_source_name")
+        for page in item.get("pages", []):
+            if f"PDF 第{page}页" not in content:
+                problems.append("missing_page:" + str(page))
+        found_images = re.findall(r"!\[[^\]]*\]\(([^)]+)\)", content)
+        images += len(found_images)
+        if len(found_images) != item.get("image_count", 0):
+            problems.append("image_count_mismatch")
+        anchor = anchor_text(item)
+        if anchor:
+            receipt_anchor = anchors.get(key, {})
+            children = client.call(
+                "GET", base + f"/segments/{parent['id']}/child_chunks", params={"limit": 100}
+            ).get("data", [])
+            if not any(child["id"] == receipt_anchor.get("child_id") and child.get("content") == anchor for child in children):
+                problems.append("missing_search_anchor")
+        checked += 1
+        if problems:
+            errors.append({"key": key, "errors": problems})
+    report = {
+        "checked_at": now(), "checked": checked, "expected": len(manifest["documents"]),
+        "image_references": images, "errors": errors,
+        "passed": checked == len(manifest["documents"]) and not errors,
+    }
+    write_json(root / "reports/remote-corpus-audit.json", report)
+    return report
+
+
+def retire_replaced(cfg: dict, plan_path: Path) -> dict:
+    """Disable only older documents for sources replaced by this job."""
+    from ops_rag.common import now, read_json, write_json
+    from ops_rag.full_sync import connect
+
+    root = Path(cfg["data_dir"])
+    plan = json.loads(plan_path.read_text(encoding="utf-8"))
+    client = connect(cfg)
+    retired = []
+    for group, state_path in (
+        ("documents", root / "dify/full-state.json"),
+        ("navigation", root / "process-navigation/dify/full-state.json"),
+    ):
+        keys = plan.get(group, [])
+        if not keys:
+            continue
+        state = read_json(state_path)
+        receipts = state.get("documents", {})
+        for key in keys:
+            receipt = receipts.get(key)
+            if not receipt or receipt.get("retired_at"):
+                continue
+            dataset = receipt["dataset_id"]
+            document_id = receipt["document_id"]
+            remote = {item["id"]: item for item in client.documents(dataset)}
+            current = remote.get(document_id)
+            if current and current.get("enabled"):
+                client.call(
+                    "PATCH", f"datasets/{dataset}/documents/status/disable",
+                    json={"document_ids": [document_id]},
+                )
+                remote = {item["id"]: item for item in client.documents(dataset)}
+                if remote.get(document_id, {}).get("enabled"):
+                    raise RuntimeError(f"旧文档仍处于启用状态：{key}")
+            receipt["retired_at"] = now()
+            write_json(state_path, state)
+            retired.append(key)
+    result = {"retired": retired, "count": len(retired), "checked_at": now()}
+    write_json(root / "reports/replaced-documents.json", result)
+    return result
+
+
+def setup_datasets(cfg: dict, navigation: bool = False) -> dict:
+    from ops_rag.common import read_json, write_json
+    from ops_rag.corpus import DOMAINS
+    from ops_rag.full_sync import connect, retrieval_model
+
+    client = connect(cfg)
+    base = os.environ["DIFY_BASE_URL"].rstrip("/")
+    prefix = os.environ.get("PDF2DIFY_DATASET_PREFIX", "pdf2dify-")
+    mapping = json.loads(os.environ.get("PDF2DIFY_DATASET_IDS", "{}"))
+    root = Path(cfg["data_dir"])
+    if navigation:
+        root = root / "process-navigation"
+        categories = {"process_navigation": "资料导航"}
+    else:
+        categories = DOMAINS
+    state_path = root / "dify/full-state.json"
+    state = read_json(state_path) if state_path.exists() else {"datasets": {}, "documents": {}}
+    if state.get("base_url", base) != base:
+        raise ValueError("同步回执属于另一个 Dify 服务")
+    state["base_url"] = base
+    available, page = [], 1
+    while True:
+        batch = client.call("GET", "datasets", params={"page": page, "limit": 100})
+        available.extend(batch.get("data", []))
+        if not batch.get("has_more"):
+            break
+        page += 1
+    by_id = {item["id"]: item for item in available}
+    for domain, label in categories.items():
+        mapped_id = mapping.get(domain)
+        if mapped_id:
+            if mapped_id not in by_id:
+                raise ValueError(f"知识库映射无效：{domain}")
+            dataset = by_id[mapped_id]
+        else:
+            name = prefix + label
+            matches = [item for item in available if item["name"] == name]
+            if len(matches) > 1:
+                raise ValueError(f"知识库名称重复：{name}")
+            if matches:
+                dataset = matches[0]
+            else:
+                dataset = client.call("POST", "datasets", json={
+                    "name": name,
+                    "description": f"pdf2dify 本地 PDF 解析与 OCR；{label}。原文图片和页码保留，业务有效性待复核。",
+                    "permission": "only_me", "indexing_technique": "high_quality",
+                    "embedding_model": os.environ.get("DIFY_EMBEDDING_MODEL", "nomic-embed-text:latest"),
+                    "embedding_model_provider": os.environ.get("DIFY_EMBEDDING_PROVIDER", "langgenius/ollama/ollama"),
+                    "retrieval_model": retrieval_model(None if navigation else domain),
+                })
+                available.append(dataset)
+                by_id[dataset["id"]] = dataset
+        old_id = state.get("datasets", {}).get(domain, {}).get("id")
+        if old_id and old_id != dataset["id"] and state.get("documents"):
+            raise ValueError(f"{domain} 已有同步回执，不能直接切换目标知识库")
+        state.setdefault("datasets", {})[domain] = {"id": dataset["id"], "name": dataset["name"]}
+        write_json(state_path, state)
+    return state["datasets"]
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("stage", choices=[
         "scan", "native", "process", "build", "navigation", "verify",
         "dify-setup", "dify-upload", "dify-status",
-        "nav-setup", "nav-upload", "nav-status",
+        "dify-anchor", "dify-audit",
+        "dify-retire",
+        "nav-setup", "nav-upload", "nav-status", "nav-audit",
     ])
     parser.add_argument("--engine-root", required=True)
     parser.add_argument("--config", required=True)
     parser.add_argument("--classifications")
+    parser.add_argument("--retire-plan")
     parser.add_argument("--workers", type=int, default=2)
     args = parser.parse_args()
     engine_root = Path(args.engine_root).resolve()
@@ -135,12 +312,24 @@ def main() -> int:
         if result["errors"]:
             print(json.dumps(result, ensure_ascii=False))
             return 2
-    elif args.stage in {"dify-setup", "dify-upload", "dify-status"}:
+    elif args.stage == "dify-retire":
+        if not args.retire_plan:
+            parser.error("--retire-plan is required for dify-retire")
+        result = retire_replaced(cfg, Path(args.retire_plan))
+    elif args.stage in {"dify-setup", "dify-upload", "dify-status", "dify-anchor", "dify-audit"}:
         from ops_rag import full_sync
         if args.stage == "dify-setup":
-            result = full_sync.setup(cfg)
+            result = setup_datasets(cfg)
         elif args.stage == "dify-upload":
             result = full_sync.upload(cfg, workers=max(1, min(args.workers, 4)))
+        elif args.stage == "dify-anchor":
+            from ops_rag.search_anchors import enrich
+            result = enrich(cfg, workers=max(1, min(args.workers, 4)))
+        elif args.stage == "dify-audit":
+            result = audit_remote(cfg)
+            if not result["passed"]:
+                print(json.dumps(result, ensure_ascii=False))
+                return 2
         else:
             result = full_sync.status(cfg)
     else:
@@ -148,11 +337,14 @@ def main() -> int:
         import process_navigation
         from ops_rag import full_sync
         if args.stage == "nav-setup":
-            result = process_navigation.setup(cfg)
+            result = setup_datasets(cfg, navigation=True)
         elif args.stage == "nav-upload":
             result = full_sync.upload(process_navigation.nav_config(cfg), workers=max(1, min(args.workers, 4)))
         else:
-            result = process_navigation.status(cfg)
+            result = process_navigation.status(cfg, audit=args.stage == "nav-audit")
+            if args.stage == "nav-audit" and not result["passed"]:
+                print(json.dumps(result, ensure_ascii=False))
+                return 2
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0
 
