@@ -133,7 +133,6 @@ def serve(api_python: Path, *, open_browser: bool = True) -> None:
     log_dir = ROOT / "data" / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
     flags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
-    options = {"creationflags": flags} if os.name == "nt" else {"start_new_session": True}
     processes: list[subprocess.Popen[bytes]] = []
     logs = []
     try:
@@ -142,7 +141,8 @@ def serve(api_python: Path, *, open_browser: bool = True) -> None:
             logs.append(output)
             processes.append(subprocess.Popen(
                 [str(api_python), "-m", module], cwd=ROOT, stdout=output,
-                stderr=subprocess.STDOUT, **options,
+                stderr=subprocess.STDOUT, creationflags=flags,
+                start_new_session=os.name != "nt",
             ))
         for _ in range(40):
             if any(process.poll() is not None for process in processes):
