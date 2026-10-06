@@ -35,6 +35,9 @@ class DifyClient:
     def __init__(self, base, key, transport=None):
         if not key:
             raise ValueError('Set DIFY_DATASET_API_KEY in local .env; do not paste it in chat.')
+        if transport is None:
+            # Retries cover only failed connection attempts, so a request that reached Dify is never resent.
+            transport = httpx.HTTPTransport(retries=3)
         self.client = httpx.Client(base_url=base.rstrip('/')+'/',
                                    headers={'Authorization':'Bearer '+key},
                                    timeout=60, follow_redirects=False, transport=transport)

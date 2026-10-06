@@ -10,6 +10,9 @@ from ops_rag.process_catalog import selection_catalog
 from ops_rag.search_anchors import native_operation_labels
 
 ROOT = Path(__file__).resolve().parents[1]
+DATA = ROOT/'data'
+EMBEDDING = {'embedding_provider_name': 'langgenius/ollama/ollama', 'embedding_model_name': 'nomic-embed-text:latest'}
+LLM = {'provider': 'langgenius/deepseek/deepseek', 'name': 'deepseek-v4-flash'}
 ROUTES = {k: [k] for k in DOMAINS}
 ROUTES.update({'projects_finance': ['projects', 'finance'], 'equipment_finance': ['equipment', 'finance'],
                'procurement_master': ['procurement', 'master_ops'], 'internal_funds': ['internal', 'funds'],
@@ -45,7 +48,7 @@ def finance_scopes(records):
 
 def build(dataset_ids):
     if set(dataset_ids) != set(DOMAINS): raise ValueError('All nine dataset mappings are required')
-    navigation = ROOT/'data/process-navigation'
+    navigation = DATA/'process-navigation'
     process_records = json.loads((navigation/'catalog.json').read_text(encoding='utf-8'))['records']
     process_state = json.loads((navigation/'dify/full-state.json').read_text(encoding='utf-8'))
     process_dataset = process_state['datasets']['process_navigation']['id']
@@ -54,7 +57,7 @@ def build(dataset_ids):
     route_prompt += ('\n以下是当前主数据操作手册的真实主题。问题涉及这些主数据对象的维护/创建/审批等操作时，'
                      '优先 master_ops，不能仅因“油气田、设备、会计科目、项目”等词误选其他业务库；'
                      '数据标准/编码规则仍按 master_rules，概览仍走 overview。\n'+'；'.join(master_topics))
-    evidence_manifest=json.loads((ROOT/'data/full-export/manifest.json').read_text(encoding='utf-8'))['documents']
+    evidence_manifest=json.loads((DATA/'full-export/manifest.json').read_text(encoding='utf-8'))['documents']
     equipment_topics = sorted({label for d in evidence_manifest if d['domain'] == 'equipment'
                               and d['metadata']['section_title'] == '设备管理主数据'
                               for label in native_operation_labels(d)
@@ -69,7 +72,7 @@ def build(dataset_ids):
         'search_query直接照抄该完整标题（不拆为零散关键词、不增加猜测事务码）；query仍保留用户本轮真实意图。'
         '例如“项目结转后怎么撤销”对应原文“项目结转后如何取消结转”，这属于同义定位。'
         '不一致、无匹配或缺少关键条件时不要强行套用标题。\n'+'\n'.join(faq_titles))
-    model = {'provider': 'langgenius/deepseek/deepseek', 'name': 'deepseek-v4-flash', 'mode': 'chat', 'completion_params': {'temperature': .1}}
+    model = {**LLM, 'mode': 'chat', 'completion_params': {'temperature': .1}}
     schema = {'type': 'object', 'additionalProperties': False,
               'properties': {'query': {'type': 'string'}, 'search_query': {'type':'string'}, 'answer_mode': {'type':'string','enum':['overview','detail']}, 'route': {'type': 'string', 'enum': list(ROUTES)+['clarify']}, 'clarification': {'type': 'string'}},
               'required': ['query', 'search_query', 'answer_mode', 'route', 'clarification']}
@@ -110,7 +113,7 @@ def build(dataset_ids):
         node('retrieve_process','knowledge-retrieval','读取全书流程导航',1500,-650,dataset_ids=[process_dataset],
              query_variable_selector=['normalize','structured_output','search_query'],retrieval_mode='multiple',
              multiple_retrieval_config={'top_k':1,'score_threshold':None,'reranking_mode':'weighted_score','reranking_enable':False,
-                 'weights':{'weight_type':'customized','vector_setting':{'vector_weight':.7,'embedding_provider_name':'langgenius/ollama/ollama','embedding_model_name':'nomic-embed-text:latest'},'keyword_setting':{'keyword_weight':.3}}},
+                 'weights':{'weight_type':'customized','vector_setting':{'vector_weight':.7,**EMBEDDING},'keyword_setting':{'keyword_weight':.3}}},
              metadata_filtering_mode='manual',metadata_filtering_conditions={'logical_operator':'and','conditions':[
                  {'name':'process_key','comparison_operator':'is','value':'{{#select_process.structured_output.process_key#}}'},
                  {'name':'validity_status','comparison_operator':'is not','value':'retired'}]}),
@@ -145,7 +148,7 @@ def build(dataset_ids):
         if 'equipment' in domains:
             filters.append({'name':'section_title','comparison_operator':'is not','value':'目录'})
         if key in ('master_ops','funds','finance'):
-            inventory=json.loads((ROOT/'data/full-export/manifest.json').read_text(encoding='utf-8'))['documents']
+            inventory=json.loads((DATA/'full-export/manifest.json').read_text(encoding='utf-8'))['documents']
             catalog={d['source_id']:d['source_name'] for d in inventory if d['domain']==key}
             selector_id='select_source_'+key
             selection_prompt=('根据手册目录选择与用户明确业务对象一致的一份资料。'
@@ -193,7 +196,7 @@ def build(dataset_ids):
             node(rid,'knowledge-retrieval',title,1000,y,dataset_ids=[dataset_ids[d] for d in domains],
                  query_variable_selector=query_selector,retrieval_mode='multiple',
                  multiple_retrieval_config={'top_k':6,'score_threshold':None,'reranking_mode':'weighted_score','reranking_enable':False,
-                    'weights':{'weight_type':'customized','vector_setting':{'vector_weight':.7,'embedding_provider_name':'langgenius/ollama/ollama','embedding_model_name':'nomic-embed-text:latest'},'keyword_setting':{'keyword_weight':.3}}},
+                    'weights':{'weight_type':'customized','vector_setting':{'vector_weight':.7,**EMBEDDING},'keyword_setting':{'keyword_weight':.3}}},
                  metadata_filtering_mode='manual',metadata_filtering_conditions={'logical_operator':'and','conditions':filters}),
             node(lid,'llm','依据'+title+'回答',1350,y,model=model,vision={'enabled':False},context={'enabled':True,'variable_selector':[rid,'result']},
                  prompt_template=[{'id':lid+'-system','role':'system','text':branch_answer_prompt},{'id':lid+'-user','role':'user','text':'用户问题：{{#sys.query#}}\n整理后的问题：{{#normalize.structured_output.query#}}'}]),
@@ -281,6 +284,9 @@ def build(dataset_ids):
         edges.extend([edge(rid,lid,'knowledge-retrieval','llm'),edge(lid,aid,'llm','answer')])
     for current in nodes:
         data = current['data']
+        if data['type'] == 'llm':
+            # Keep model reasoning out of {{#node.text#}} so answers never show <think> blocks.
+            data['reasoning_format'] = 'separated'
         if data.get('structured_output_enabled'):
             # Routing needs machine-readable JSON, not reasoning mixed with schema examples.
             data['model'] = deepcopy(data['model'])
@@ -297,10 +303,19 @@ def build(dataset_ids):
 
 if __name__ == '__main__':
     parser=argparse.ArgumentParser()
-    parser.add_argument('--state',default=str(ROOT/'data/dify/full-state.json'))
+    parser.add_argument('--data-root',default=str(DATA),help='Engine data directory holding full-export and process-navigation')
+    parser.add_argument('--state',help='Dataset state file; defaults to <data-root>/dify/full-state.json')
+    parser.add_argument('--embedding-provider',default=EMBEDDING['embedding_provider_name'])
+    parser.add_argument('--embedding-model',default=EMBEDDING['embedding_model_name'])
+    parser.add_argument('--llm-provider',default=LLM['provider'])
+    parser.add_argument('--llm-model',default=LLM['name'])
+    parser.add_argument('--output',default=str(ROOT/'dify/chatflow-full.yml'))
     args=parser.parse_args()
-    state=json.loads(Path(args.state).read_text(encoding='utf-8'))
+    DATA=Path(args.data_root)
+    EMBEDDING.update(embedding_provider_name=args.embedding_provider,embedding_model_name=args.embedding_model)
+    LLM.update(provider=args.llm_provider,name=args.llm_model)
+    state=json.loads(Path(args.state or DATA/'dify/full-state.json').read_text(encoding='utf-8'))
     dsl=build({k:v['id'] for k,v in state['datasets'].items()})
-    target=ROOT/'dify/chatflow-full.yml'
+    target=Path(args.output)
     target.write_text(yaml.safe_dump(dsl,allow_unicode=True,sort_keys=False),encoding='utf-8')
     print(target)

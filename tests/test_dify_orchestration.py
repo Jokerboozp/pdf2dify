@@ -83,6 +83,29 @@ def test_sync_waits_for_anchors_and_audits_before_completion(tmp_path: Path, mon
     assert (next_workspace / "engine-data" / "dify" / "search-anchors.json").is_file()
 
 
+def test_receipts_from_another_dify_server_are_replaced(tmp_path: Path):
+    settings = Settings(
+        project_root=tmp_path, data_dir=tmp_path / "data", database_path=tmp_path / "data" / "test.db",
+        engine_root=tmp_path / "engine", engine_python=tmp_path / "engine" / "python.exe",
+    )
+    settings.ensure()
+    db = Database(settings.database_path)
+    db.init()
+    runner = PipelineRunner(settings, db)
+    workspace = settings.data_dir / "jobs" / "moved"
+    stale = workspace / "engine-data" / "dify" / "full-state.json"
+    stale.parent.mkdir(parents=True)
+    stale.write_text('{"base_url":"http://old.local/v1","documents":{"old":{}}}', encoding="utf-8")
+    shared = runner._sync_state_dir("http://new.local/v1")
+
+    runner._load_sync_receipts(workspace, shared, "http://new.local/v1/")
+    assert not stale.exists()
+
+    (shared / "full-state.json").write_text('{"base_url":"http://new.local/v1","documents":{}}', encoding="utf-8")
+    runner._load_sync_receipts(workspace, shared, "http://new.local/v1")
+    assert json.loads(stale.read_text(encoding="utf-8"))["base_url"] == "http://new.local/v1"
+
+
 def test_dify_url_normalized_and_older_source_keys_retired(tmp_path: Path):
     settings = Settings(
         project_root=tmp_path, data_dir=tmp_path / "data", database_path=tmp_path / "data" / "test.db",

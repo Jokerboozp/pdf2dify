@@ -355,7 +355,7 @@ class PipelineRunner:
         if not secrets.get("DIFY_BASE_URL") or not secrets.get("DIFY_DATASET_API_KEY"):
             raise ValueError("尚未配置 Dify 地址或知识库 API Key")
         state_dir = self._sync_state_dir(secrets["DIFY_BASE_URL"])
-        self._load_sync_receipts(workspace, state_dir)
+        self._load_sync_receipts(workspace, state_dir, secrets["DIFY_BASE_URL"])
         for stage, title, progress in (
             ("dify-setup", "创建或映射 Dify 知识库", 92),
             ("dify-upload", "上传并更新 Dify 文档", 95),
@@ -467,11 +467,19 @@ class PipelineRunner:
             ("navigation-state.json", "process-navigation/dify/full-state.json"),
         )
 
-    def _load_sync_receipts(self, workspace: Path, state_dir: Path) -> None:
+    def _load_sync_receipts(self, workspace: Path, state_dir: Path, base_url: str | None = None) -> None:
         root = workspace / "engine-data"
         for shared_name, relative in self._sync_receipt_paths(workspace):
             source = state_dir / shared_name
             target = root / relative
+            if base_url and target.is_file():
+                # A retry after changing the Dify address must not reuse the old server's receipts.
+                try:
+                    owner = json.loads(target.read_text(encoding="utf-8")).get("base_url")
+                except (OSError, ValueError):
+                    owner = None
+                if owner and owner.rstrip("/") != base_url.rstrip("/"):
+                    target.unlink()
             if source.is_file() and not target.exists():
                 target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(source, target)
