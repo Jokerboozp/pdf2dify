@@ -25,7 +25,7 @@ const uploads = ref<File[]>([])
 const form = reactive({ name: '', source_path: '', mode: 'export', fixed_domain: '' })
 const dify = reactive({
   dify_base_url: '', dify_api_key: '', dify_api_key_configured: false,
-  embedding_provider: '', embedding_model: '', dataset_prefix: 'pdf2dify-',
+  embedding_provider: '', embedding_model: '', llm_provider: '', llm_model: '', dataset_prefix: 'pdf2dify-',
   dataset_ids: {} as Record<string, string>,
 })
 let timer: number | undefined
@@ -223,6 +223,21 @@ async function saveDify(test = false) {
   finally { busy.value = false }
 }
 
+async function downloadChatflow() {
+  if (!selected.value) return
+  busy.value = true
+  try {
+    const url = URL.createObjectURL(await api.chatflow(selected.value.id))
+    const link = document.createElement('a')
+    link.href = url
+    link.download = 'erp-ops-chatflow.yml'
+    link.click()
+    URL.revokeObjectURL(url)
+    flash('Chatflow DSL 已生成，请在 Dify「导入 DSL 文件」中导入')
+  } catch (e) { flash((e as Error).message, true) }
+  finally { busy.value = false }
+}
+
 function pickFiles(event: Event) {
   uploads.value = Array.from((event.target as HTMLInputElement).files || [])
     .filter(file => file.name.toLowerCase().endsWith('.pdf'))
@@ -387,6 +402,7 @@ onUnmounted(() => {
       <div v-if="selected.status === 'completed'" class="artifacts">
         <div class="block-heading"><h3>交付产物</h3><span>处理完成后可下载</span></div>
         <a class="artifact-main" :href="`/api/jobs/${selected.id}/artifacts/dify-ready.zip`"><span class="artifact-icon"><UiIcon name="database" :size="22" /></span><span><b>Dify 入库包</b><small>包含可导入的知识文档与资源</small></span><UiIcon name="download" :size="18" /></a>
+        <button v-if="selected.mode === 'sync'" class="artifact-main" type="button" :disabled="busy" @click="downloadChatflow"><span class="artifact-icon"><UiIcon name="link" :size="22" /></span><span><b>Chatflow DSL</b><small>只包含本任务同步的知识库，下载后在 Dify 导入</small></span><UiIcon name="download" :size="18" /></button>
         <div class="artifact-grid">
           <a :href="`/api/jobs/${selected.id}/artifacts/manifest.xlsx`"><UiIcon name="file" /><span>Excel 入库清单</span><UiIcon name="download" :size="16" /></a>
           <a target="_blank" rel="noopener" :href="`/api/jobs/${selected.id}/artifacts/quality-report.html`"><UiIcon name="eye" /><span>HTML 质量报告</span><UiIcon name="arrow" :size="16" /></a>
@@ -454,6 +470,8 @@ onUnmounted(() => {
         <label>知识库 API Key<input v-model="dify.dify_api_key" type="password" :placeholder="dify.dify_api_key_configured ? '已配置；留空保持不变' : 'dataset-...'" /></label>
         <label>Embedding Provider<input v-model="dify.embedding_provider" /></label>
         <label>Embedding Model<input v-model="dify.embedding_model" /></label>
+        <label>Chatflow LLM Provider<input v-model="dify.llm_provider" /></label>
+        <label>Chatflow LLM Model<input v-model="dify.llm_model" /></label>
         <label>新建知识库名称前缀<input v-model="dify.dataset_prefix" placeholder="pdf2dify-" /></label>
         <details class="dataset-mapping">
           <summary>映射已有知识库 ID（可选）</summary>

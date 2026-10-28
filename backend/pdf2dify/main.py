@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import subprocess
 from pathlib import Path
 
 import httpx
@@ -14,6 +15,7 @@ from .config import SecretStore, Settings
 from .categories import CategoryStore
 from .db import Database
 from .jobs import JobService
+from .pipeline import PipelineRunner
 from .schemas import CategoryUpsert, DifySettingsUpdate, FileDomainUpdate, PathJobCreate
 
 
@@ -273,6 +275,19 @@ def download_artifact(job_id: str, artifact: str):
     return FileResponse(path, filename=path.name)
 
 
+@app.get("/api/jobs/{job_id}/chatflow.yml")
+def download_chatflow(job_id: str):
+    try:
+        path = PipelineRunner(settings, db).build_chatflow(job_id)
+    except KeyError as exc:
+        raise not_found(exc) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except (RuntimeError, OSError, subprocess.TimeoutExpired) as exc:
+        raise HTTPException(status_code=500, detail=f"生成 Chatflow 失败：{exc}") from exc
+    return FileResponse(path, filename="erp-ops-chatflow.yml", media_type="application/x-yaml")
+
+
 @app.get("/api/settings/dify")
 def get_dify_settings():
     return secrets.public()
@@ -285,6 +300,8 @@ def update_dify_settings(payload: DifySettingsUpdate):
         "DIFY_DATASET_API_KEY": payload.dify_api_key,
         "DIFY_EMBEDDING_PROVIDER": payload.embedding_provider,
         "DIFY_EMBEDDING_MODEL": payload.embedding_model,
+        "DIFY_LLM_PROVIDER": payload.llm_provider,
+        "DIFY_LLM_MODEL": payload.llm_model,
         "PDF2DIFY_DATASET_PREFIX": payload.dataset_prefix,
         "PDF2DIFY_DATASET_IDS": json.dumps(payload.dataset_ids, ensure_ascii=False) if payload.dataset_ids is not None else None,
     }

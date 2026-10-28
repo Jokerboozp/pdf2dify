@@ -46,26 +46,59 @@ def finance_scopes(records):
     return result
 
 
-def build(dataset_ids):
-    if set(dataset_ids) != set(DOMAINS): raise ValueError('All nine dataset mappings are required')
+def available_routes(dataset_ids):
+    """Single-library routes for every mapped dataset, plus preset combinations fully covered."""
+    routes = {k: [k] for k in DOMAINS if k in dataset_ids}
+    routes.update({k: [k] for k in dataset_ids if k not in routes})
+    routes.update({k: v for k, v in ROUTES.items() if len(v) > 1 and all(d in dataset_ids for d in v)})
+    return routes
+
+
+def route_options(prompt, routes, labels):
+    """Keep only selectable route lines and describe custom categories by their names."""
+    head, rest = prompt.split('route 只能选择以下值：\n', 1)
+    options, tail = rest.split('clarify：', 1)
+    kept = [line for line in options.splitlines() if line.split('：', 1)[0] in routes]
+    known = {line.split('：', 1)[0] for line in kept}
+    kept += [f'{key}：{labels[key]}相关业务资料。' for key in routes if key not in known]
+    return head + 'route 只能选择以下值：\n' + '\n'.join(kept) + '\nclarify：' + tail
+
+
+def build(dataset_ids, process_dataset=None, process_records=None, documents=None, labels=None,
+          app_name='ERP运维知识助手-全量演示'):
+    if not dataset_ids: raise ValueError('At least one dataset mapping is required')
+    labels = {**DOMAINS, **(labels or {})}
+    unknown = set(dataset_ids) - set(labels)
+    if unknown: raise ValueError('Missing category names: ' + ', '.join(sorted(unknown)))
+    # selection_catalog names categories through the shared table.
+    DOMAINS.update({k: v for k, v in labels.items() if k not in DOMAINS})
+    routes = available_routes(dataset_ids)
     navigation = DATA/'process-navigation'
-    process_records = json.loads((navigation/'catalog.json').read_text(encoding='utf-8'))['records']
-    process_state = json.loads((navigation/'dify/full-state.json').read_text(encoding='utf-8'))
-    process_dataset = process_state['datasets']['process_navigation']['id']
-    master_topics = sorted({r['filename_topic'] for r in process_records if r['domains'] == ['master_ops']})
-    route_prompt = (ROOT/'prompts/route-full.txt').read_text(encoding='utf-8')
-    route_prompt += ('\n以下是当前主数据操作手册的真实主题。问题涉及这些主数据对象的维护/创建/审批等操作时，'
-                     '优先 master_ops，不能仅因“油气田、设备、会计科目、项目”等词误选其他业务库；'
-                     '数据标准/编码规则仍按 master_rules，概览仍走 overview。\n'+'；'.join(master_topics))
-    evidence_manifest=json.loads((DATA/'full-export/manifest.json').read_text(encoding='utf-8'))['documents']
-    equipment_topics = sorted({label for d in evidence_manifest if d['domain'] == 'equipment'
-                              and d['metadata']['section_title'] == '设备管理主数据'
-                              for label in native_operation_labels(d)
-                              if not re.match(r'^(创建|查询|事务码|事物码)[：:]', label)})
-    route_prompt += ('\n以下是设备管理库操作正文中的真实章节对象：'+'；'.join(equipment_topics)+
-                     '。询问这些对象的创建、查询、批量导入等具体操作时，选 equipment、detail。'
-                     '这些对象位于设备管理操作手册内，不需要存在同名整本手册。不能仅因“主数据”三字选 master_ops；'
-                     '若用户明确要求 MDG 的创建审批，则按 MDG 资料定位，不把两种入口混用。')
+    if process_records is None:
+        process_records = json.loads((navigation/'catalog.json').read_text(encoding='utf-8'))['records']
+    if process_dataset is None:
+        process_state = json.loads((navigation/'dify/full-state.json').read_text(encoding='utf-8'))
+        process_dataset = process_state['datasets']['process_navigation']['id']
+    if documents is None:
+        documents = json.loads((DATA/'full-export/manifest.json').read_text(encoding='utf-8'))['documents']
+    route_prompt = route_options((ROOT/'prompts/route-full.txt').read_text(encoding='utf-8'), routes, labels)
+    if 'master_ops' in routes:
+        master_topics = sorted({r['filename_topic'] for r in process_records if r['domains'] == ['master_ops']})
+        route_prompt += ('\n以下是当前主数据操作手册的真实主题。问题涉及这些主数据对象的维护/创建/审批等操作时，'
+                         '优先 master_ops，不能仅因“油气田、设备、会计科目、项目”等词误选其他业务库；'
+                         '数据标准/编码规则仍按 master_rules，概览仍走 overview。\n'+'；'.join(master_topics))
+    evidence_manifest = documents
+    if 'equipment' in routes:
+        equipment_topics = sorted({label for d in evidence_manifest if d['domain'] == 'equipment'
+                                  and d['metadata']['section_title'] == '设备管理主数据'
+                                  for label in native_operation_labels(d)
+                                  if not re.match(r'^(创建|查询|事务码|事物码)[：:]', label)})
+    if 'equipment' in routes and equipment_topics:
+        route_prompt += ('\n以下是设备管理库操作正文中的真实章节对象：'+'；'.join(equipment_topics)+
+                         '。询问这些对象的创建、查询、批量导入等具体操作时，选 equipment、detail。'
+                         '这些对象位于设备管理操作手册内，不需要存在同名整本手册。'
+                         +('不能仅因“主数据”三字选 master_ops；若用户明确要求 MDG 的创建审批，则按 MDG 资料定位，不把两种入口混用。'
+                           if 'master_ops' in routes else ''))
     faq_titles=sorted({d['metadata']['section_title'] for d in evidence_manifest if '常见问题' in d['source_name']
                        and d['metadata']['section_title'] not in ('资料说明与适用范围','财务模块常见问题')})
     route_prompt += ('\n以下是已经入库的原文常见问题标题。仅当用户的业务对象、动作、报错及适用条件与某标题一致时，'
@@ -74,7 +107,7 @@ def build(dataset_ids):
         '不一致、无匹配或缺少关键条件时不要强行套用标题。\n'+'\n'.join(faq_titles))
     model = {**LLM, 'mode': 'chat', 'completion_params': {'temperature': .1}}
     schema = {'type': 'object', 'additionalProperties': False,
-              'properties': {'query': {'type': 'string'}, 'search_query': {'type':'string'}, 'answer_mode': {'type':'string','enum':['overview','detail']}, 'route': {'type': 'string', 'enum': list(ROUTES)+['clarify']}, 'clarification': {'type': 'string'}},
+              'properties': {'query': {'type': 'string'}, 'search_query': {'type':'string'}, 'answer_mode': {'type':'string','enum':['overview','detail']}, 'route': {'type': 'string', 'enum': list(routes)+['clarify']}, 'clarification': {'type': 'string'}},
               'required': ['query', 'search_query', 'answer_mode', 'route', 'clarification']}
     nodes = [node('start', 'start', '用户提问', 0, 500, variables=[]),
         node('normalize', 'llm', '理解问题并选择业务范围', 300, 500, model=model,
@@ -86,7 +119,7 @@ def build(dataset_ids):
                      'query_prompt_template':'请结合历史对话整理本轮真实问题，只输出结构化分类结果。\n本轮问题：{{#sys.query#}}'}),
         node('route', 'if-else', '选择主题库或跨模块组合', 650, 500, cases=[{
             'id':key,'case_id':key,'logical_operator':'and','conditions':[{'id':key+'-condition',
-            'variable_selector':['normalize','structured_output','route'],'comparison_operator':'is','value':key,'varType':'string'}]} for key in ROUTES]),
+            'variable_selector':['normalize','structured_output','route'],'comparison_operator':'is','value':key,'varType':'string'}]} for key in routes]),
         node('clarify', 'answer', '追问业务对象', 1000, -180, answer='{{#normalize.structured_output.clarification#}}', variables=[])]
     nodes.extend([
         node('answer_mode','if-else','流程概览还是具体问题',580,-440,cases=[{'id':'overview','case_id':'overview','logical_operator':'and','conditions':[{
@@ -139,17 +172,16 @@ def build(dataset_ids):
     answer_prompt += '\n21. 培训正文中的演示单位名称、编码、人员、日期和金额也属于示例，不只是截图数值。步骤写“输入目标组织名称/实际编码”，必要时括注原文示例；不要直接命令用户输入演示公司的名称或编号。精确查询、模糊查询、编码查询等是可选查询方式，应分别列出，不能把多个示例变成必须依次执行的步骤。'
     answer_prompt += '\n22. 用户说“第N部分、第二个、展开这一项”等时，指的是上一轮概览里的选项序号，不必等于原文的章节编号。整理后的问题已补全实际业务对象，应按补全后的对象和条件回答；不要因为原文没有同号章节就说没有依据，也不要把对话序号当成检索条件。'
     answer_prompt += '\n23. 从流程概览继续展开时，原手册已经入库；本次证据只覆盖部分操作，不代表整份手册缺失。先直接说明本次有依据的操作和范围，不要要求用户重新上传或补传已经存在的整本手册，也不要把资料中没有要求的检查、正式运行、审批等步骤预设为必然缺失的后续流程。需要继续细化时，询问用户关注的具体步骤或条件。'
-    for i, (key, domains) in enumerate(ROUTES.items()):
+    for i, (key, domains) in enumerate(routes.items()):
         rid, lid, aid = 'retrieve_'+key, 'grounded_'+key, 'answer_'+key
-        title = ' + '.join(DOMAINS[d] for d in domains)
+        title = ' + '.join(labels[d] for d in domains)
         y = i * 220
         query_selector=['normalize','structured_output','search_query']
         filters=[{'name':'validity_status','comparison_operator':'is not','value':'retired'}]
         if 'equipment' in domains:
             filters.append({'name':'section_title','comparison_operator':'is not','value':'目录'})
         if key in ('master_ops','funds','finance'):
-            inventory=json.loads((DATA/'full-export/manifest.json').read_text(encoding='utf-8'))['documents']
-            catalog={d['source_id']:d['source_name'] for d in inventory if d['domain']==key}
+            catalog={d['source_id']:d['source_name'] for d in evidence_manifest if d['domain']==key}
             selector_id='select_source_'+key
             selection_prompt=('根据手册目录选择与用户明确业务对象一致的一份资料。'
                 '优先匹配业务对象，其次匹配创建/修改等动作；不能因为其他对象的动作相同就选错对象。'
@@ -292,10 +324,17 @@ def build(dataset_ids):
             data['model'] = deepcopy(data['model'])
             data['model'].setdefault('completion_params', {}).update(thinking=False, response_format='json_object')
             data['prompt_template'][0]['text'] += '\n仅输出符合指定 schema 的 JSON 对象；不输出分析、schema 本身、Markdown 或其他文字。'
-    return {'version':'0.7.0','kind':'app','app':{'name':'ERP运维知识助手-全量演示','description':'Dify 原生混合检索：9个业务主题库与流程导航，关键词/向量加权排序，原文图片由 Dify 提供。本地解析和OCR，资料适用性待复核。','mode':'advanced-chat','icon':'📚','icon_type':'emoji','icon_background':'#E0F2FE','use_icon_as_answer_icon':False},
+    # Greeting and suggestions name only the libraries and books in this build.
+    names = '、'.join(labels[d] for d in dataset_ids)
+    topics = list(dict.fromkeys(r.get('title') or r['filename_topic'] for r in process_records
+                                if set(r['domains']) & set(dataset_ids)))
+    example = f'（如“{topics[0]}”）' if topics else ''
+    opening = (f'你好，我是{app_name}，可以解答{names}资料中的问题。可以直接输入流程或手册名称{example}查看整体概览，'
+               '再选择需要展开的环节；也可以描述具体操作或报错。回答附原文页码，有相关原图时会展示。资料适用性待业务复核。')
+    return {'version':'0.7.0','kind':'app','app':{'name':app_name,'description':f'{names}：Dify 原生混合检索，{len(dataset_ids)}个业务主题库与流程导航，关键词/向量加权排序，原文图片由 Dify 提供。本地解析和OCR，资料适用性待复核。','mode':'advanced-chat','icon':'📚','icon_type':'emoji','icon_background':'#E0F2FE','use_icon_as_answer_icon':False},
         'dependencies':[], 'workflow':{'conversation_variables':[],'environment_variables':[],
-        'features':{'opening_statement':'你好，可以直接输入流程名称（如“财务月结”）查看整体概览，再选择需要展开的环节；也可以描述具体操作或报错。回答附原文页码，有相关原图时会展示。资料适用性待业务复核。',
-            'suggested_questions':['财务月结业务流程','油气田单元创建流程','项目结转后怎么撤销？'],
+        'features':{'opening_statement':opening,
+            'suggested_questions':topics[:3],
             'suggested_questions_after_answer':{'enabled':False},'retriever_resource':{'enabled':True},'file_upload':{'enabled':False},
             'speech_to_text':{'enabled':False},'text_to_speech':{'enabled':False},'sensitive_word_avoidance':{'enabled':False}},
         'graph':{'nodes':nodes,'edges':edges,'viewport':{'x':30,'y':50,'zoom':.35}}}}

@@ -15,7 +15,7 @@ from pathlib import Path
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill
 
-from .config import SecretStore, Settings
+from .config import DEFAULT_LLM_MODEL, DEFAULT_LLM_PROVIDER, SecretStore, Settings
 from .categories import CategoryStore
 from .db import Database, utcnow
 from .domains import classify_path
@@ -417,6 +417,42 @@ class PipelineRunner:
         temp = index_path.with_suffix(".tmp")
         temp.write_text(json.dumps(source_index, ensure_ascii=False, indent=2), encoding="utf-8")
         os.replace(temp, index_path)
+
+    def build_chatflow(self, job_id: str) -> Path:
+        """Build a chatflow DSL for the knowledge bases this sync job wrote to."""
+        job = self.db.get_job(job_id)
+        workspace = self.settings.data_dir / "jobs" / job_id
+        root = workspace / "engine-data"
+        required = ("full-export/manifest.json", "dify/full-state.json",
+                    "process-navigation/catalog.json", "process-navigation/dify/full-state.json")
+        if job["mode"] != "sync" or job["status"] != "completed":
+            raise ValueError("只有已完成的 Dify 同步任务可以生成 Chatflow")
+        if not all((root / relative).is_file() for relative in required):
+            raise ValueError("任务的导出清单或同步回执已不存在，无法生成 Chatflow")
+        secrets = self.secrets.read()
+        request = workspace / "chatflow-request.json"
+        request.write_text(json.dumps({
+            "output": str(workspace / "chatflow.yml"), "labels": self.categories.mapping(),
+            "dataset_prefix": secrets.get("PDF2DIFY_DATASET_PREFIX", "pdf2dify-"),
+            "embedding_provider": secrets.get("DIFY_EMBEDDING_PROVIDER", "langgenius/ollama/ollama"),
+            "embedding_model": secrets.get("DIFY_EMBEDDING_MODEL", "nomic-embed-text:latest"),
+            "llm_provider": secrets.get("DIFY_LLM_PROVIDER", DEFAULT_LLM_PROVIDER),
+            "llm_model": secrets.get("DIFY_LLM_MODEL", DEFAULT_LLM_MODEL),
+            "app_name": f"{job['name']}知识助手",
+        }, ensure_ascii=False, indent=2), encoding="utf-8")
+        command = [
+            str(self.settings.engine_python), str(Path(__file__).with_name("engine_bridge.py")), "chatflow",
+            "--engine-root", str(self.settings.engine_root), "--config", str(workspace / "config.yaml"),
+            "--request", str(request),
+        ]
+        result = subprocess.run(
+            command, cwd=self.settings.engine_root, capture_output=True, text=True,
+            encoding="utf-8", errors="replace", timeout=600,
+        )
+        if result.returncode:
+            detail = (result.stderr or result.stdout).strip().splitlines()
+            raise RuntimeError(detail[-1] if detail else f"生成 Chatflow 退出码 {result.returncode}")
+        return workspace / "chatflow.yml"
 
     def _replacement_plan(self, job_id: str, workspace: Path, state_dir: Path) -> tuple[dict, dict]:
         job = self.db.get_job(job_id)

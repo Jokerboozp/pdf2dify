@@ -7,6 +7,8 @@ from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_LLM_PROVIDER = "langgenius/deepseek/deepseek"
+DEFAULT_LLM_MODEL = "deepseek-v4-flash"
 
 
 @dataclass(frozen=True)
@@ -86,6 +88,8 @@ class SecretStore:
             "dify_api_key_configured": bool(values.get("DIFY_DATASET_API_KEY")),
             "embedding_provider": values.get("DIFY_EMBEDDING_PROVIDER", "langgenius/ollama/ollama"),
             "embedding_model": values.get("DIFY_EMBEDDING_MODEL", "nomic-embed-text:latest"),
+            "llm_provider": values.get("DIFY_LLM_PROVIDER", DEFAULT_LLM_PROVIDER),
+            "llm_model": values.get("DIFY_LLM_MODEL", DEFAULT_LLM_MODEL),
             "dataset_prefix": values.get("PDF2DIFY_DATASET_PREFIX", "pdf2dify-"),
             "dataset_ids": dataset_ids,
         }

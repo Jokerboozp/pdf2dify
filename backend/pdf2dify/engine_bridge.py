@@ -256,6 +256,44 @@ def setup_datasets(cfg: dict, navigation: bool = False) -> dict:
     return state["datasets"]
 
 
+def build_chatflow(cfg: dict, request: dict, engine_root: Path) -> dict:
+    """Write a chatflow DSL limited to the knowledge bases this job synced."""
+    import yaml
+    from ops_rag.common import now, read_json
+
+    sys.path.insert(0, str(engine_root / "scripts"))
+    import build_full_chatflow as builder
+
+    root = Path(cfg["data_dir"])
+    documents = read_json(root / "full-export/manifest.json")["documents"]
+    records = read_json(root / "process-navigation/catalog.json")["records"]
+    used = {item["domain"] for item in documents}
+    # Sync receipts list every dataset on the server; keep only this job's categories.
+    datasets = {domain: dataset for domain, dataset in read_json(root / "dify/full-state.json")["datasets"].items()
+                if domain in used}
+    missing = used - datasets.keys()
+    if missing:
+        raise ValueError(f"以下分类没有同步回执：{', '.join(sorted(missing))}")
+    navigation = read_json(root / "process-navigation/dify/full-state.json")["datasets"]["process_navigation"]["id"]
+    prefix = request.get("dataset_prefix", "")
+    labels = {}
+    for domain, dataset in datasets.items():
+        name = dataset.get("name", domain)
+        labels[domain] = request["labels"].get(domain) or (name[len(prefix):] if prefix and name.startswith(prefix) else name)
+    builder.EMBEDDING.update(embedding_provider_name=request["embedding_provider"],
+                             embedding_model_name=request["embedding_model"])
+    builder.LLM.update(provider=request["llm_provider"], name=request["llm_model"])
+    dsl = builder.build({domain: dataset["id"] for domain, dataset in datasets.items()},
+                        process_dataset=navigation, process_records=records, documents=documents,
+                        labels=labels, app_name=request["app_name"])
+    output = Path(request["output"])
+    temp = output.with_suffix(".tmp")
+    temp.write_text(yaml.safe_dump(dsl, allow_unicode=True, sort_keys=False), encoding="utf-8")
+    os.replace(temp, output)
+    return {"output": str(output), "built_at": now(), "datasets": sorted(labels.values()),
+            "documents": len(documents), "process_records": len(records)}
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("stage", choices=[
@@ -264,11 +302,13 @@ def main() -> int:
         "dify-anchor", "dify-audit",
         "dify-retire",
         "nav-setup", "nav-upload", "nav-status", "nav-audit",
+        "chatflow",
     ])
     parser.add_argument("--engine-root", required=True)
     parser.add_argument("--config", required=True)
     parser.add_argument("--classifications")
     parser.add_argument("--retire-plan")
+    parser.add_argument("--request")
     parser.add_argument("--workers", type=int, default=2)
     args = parser.parse_args()
     engine_root = Path(args.engine_root).resolve()
@@ -330,6 +370,10 @@ def main() -> int:
         if not args.retire_plan:
             parser.error("--retire-plan is required for dify-retire")
         result = retire_replaced(cfg, Path(args.retire_plan))
+    elif args.stage == "chatflow":
+        if not args.request:
+            parser.error("--request is required for chatflow")
+        result = build_chatflow(cfg, json.loads(Path(args.request).read_text(encoding="utf-8")), engine_root)
     elif args.stage in {"dify-setup", "dify-upload", "dify-status", "dify-anchor", "dify-audit"}:
         from ops_rag import full_sync
         if args.stage == "dify-setup":

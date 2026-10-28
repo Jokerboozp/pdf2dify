@@ -82,5 +82,13 @@ export const api = {
   saveSettings: (payload: object) => request<any>('/api/settings/dify', {
     method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
   }),
+  chatflow: async (id: string) => {
+    const response = await fetch(`/api/jobs/${id}/chatflow.yml`)
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({}))
+      throw new Error(body.detail || `请求失败：${response.status}`)
+    }
+    return response.blob()
+  },
   testDify: () => request<{ok: boolean; message: string}>('/api/settings/dify/test', { method: 'POST' }),
 }

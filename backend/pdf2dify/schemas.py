@@ -24,5 +24,7 @@ class DifySettingsUpdate(BaseModel):
     dify_api_key: str | None = None
     embedding_provider: str | None = None
     embedding_model: str | None = None
+    llm_provider: str | None = None
+    llm_model: str | None = None
     dataset_prefix: str | None = None
     dataset_ids: dict[str, str] | None = None

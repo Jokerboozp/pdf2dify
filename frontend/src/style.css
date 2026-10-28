@@ -123,6 +123,7 @@ main{width:min(1320px,calc(100% - 56px));margin:0 auto}
 .artifact-main>span:nth-child(2){display:flex;flex-direction:column;gap:3px;flex:1}
 .artifact-main b{font-size:14px}
 .artifact-main small{color:#699493;font-size:11px}
+button.artifact-main{width:100%;margin-top:10px;text-align:left}
 .artifact-grid{display:grid;grid-template-columns:1fr 1fr;gap:9px;margin-top:10px}
 .artifact-grid a{display:flex;align-items:center;gap:9px;min-width:0;min-height:44px;padding:10px 12px;border:1px solid #e2e9ec;border-radius:8px;color:#475d6f;text-decoration:none;font-size:12px;font-weight:600}
 .artifact-grid a:hover{background:#f4f9f8;border-color:#bfd8d5;color:#176b6a}
