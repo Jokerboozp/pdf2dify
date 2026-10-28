@@ -20,3 +20,56 @@
     - 工作中心主数据创建、查询
   checks:
     - 本轮切换到设备管理手册，IR01/IR03，不继承油气田单元。
+- id: finance_repair_query_after_overview
+  turns:
+    - 项目结转后怎么撤销？
+    - 财务月结业务流程
+    - 维修工单结转
+    - 维修工单查询
+  expected_route: finance
+  expected_answer_mode: detail
+  expected_source: e495e2bc31a4e3c6
+  expected_section: 1.1 维修工单查询-总账管理岗
+  expected_pdf_pages: [3, 4, 5, 6]
+  checks:
+    - 第二轮明确切换到财务月结，不把第一轮项目撤销意图带入后续问题。
+    - 第三轮只选择维修工单结转分册主题，选择 finance、overview，展示该分册的环节和页码，不重复财务月结总册。
+    - 第四轮 normalize 的 query 保留财务月结-维修工单结转操作手册及维修工单查询，route 为 finance、answer_mode 为 detail。
+    - 检索命中文档 source_id 为 e495e2bc31a4e3c6，引用维修工单查询-总账管理岗第3至6页。
+    - 回答包含原文 ZP0FIADG0007 查询入口及该章节明确操作，原图实际加载。
+    - 不用设备管理手册的修改、审核章节替代，不在有正文时声称没有维修工单查询依据。
+- id: finance_repair_query_after_explicit_submanual_overview
+  turns:
+    - 财务月结业务流程
+    - 维修工单结转，先给我这份分册的整体概览
+    - 维修工单查询
+  expected_route: finance
+  expected_answer_mode: detail
+  expected_source: e495e2bc31a4e3c6
+  expected_section: 1.1 维修工单查询-总账管理岗
+  expected_pdf_pages: [3, 4, 5, 6]
+  checks:
+    - 第二轮明确要求分册整体概览，允许 overview 并定位维修工单结转分册。
+    - 第三轮继承该分册，展开维修工单查询正文，不跳到设备管理。
+- id: finance_followup_explicitly_switches_to_equipment
+  turns:
+    - 财务月结业务流程
+    - 维修工单结转
+    - 改看设备管理操作手册的维修工单查询
+  expected_route: equipment
+  expected_answer_mode: detail
+  expected_source: 1500bced25fba85c
+  checks:
+    - 最后一轮按明确的新手册选择 equipment，不强行继承财务月结维修工单结转分册。
+    - 不混入财务分册的 ZP0FIADG0007 查询步骤；仅使用设备管理手册直接支持本轮问题的正文或说明不足。
+- id: finance_followup_switches_to_independent_equipment_topic
+  turns:
+    - 财务月结业务流程
+    - 维修工单结转
+    - 工作中心主数据创建、查询
+  expected_route: equipment
+  expected_answer_mode: detail
+  expected_source: 1500bced25fba85c
+  checks:
+    - 新对象不属于上轮财务分册环节，切换到设备管理手册的工作中心正文，保留 IR01/IR03。
+    - 不把上一轮财务月结、维修工单结转或查询凭证条件加入本轮问题。
